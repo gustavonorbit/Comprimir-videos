@@ -1,0 +1,48 @@
+# ⚡ INSTRUÇÕES RÁPIDAS (1 MINUTO)
+
+## 🚀 EXECUTE AGORA
+
+```bash
+cd "/Users/gustavo/Comprimir videos"
+/usr/local/bin/python3 main.py
+```
+
+**A janela abre em <5 segundos ✅**
+
+---
+
+## 3️⃣ PASSOS PARA COMPRIMIR
+
+1. Clique **"Selecionar Vídeo"** → escolha um arquivo
+2. Deixe **"Qualidade: Balanceado"** (padrão)
+3. Clique **"COMPRIMIR VÍDEO"** e aguarde
+
+**Pronto!** Arquivo comprimido em `nome_comprimido.mp4`
+
+---
+
+## ⚠️ ANTES DE USAR
+
+Verifique FFmpeg:
+```bash
+ffmpeg -version | head -1
+```
+
+Se não aparecer nada:
+```bash
+brew install ffmpeg  # macOS
+# ou Windows: choco install ffmpeg
+# ou Linux: sudo apt install ffmpeg
+```
+
+---
+
+## 📚 DOCUMENTAÇÃO
+
+- [INDICE.md](INDICE.md) - Mapa completo
+- [README.md](README.md) - Guia do usuário
+- [TECNICA_DETALHADA.md](TECNICA_DETALHADA.md) - Como funciona (opcional)
+
+---
+
+**Tudo funciona. Aproveite! 🎬**

@@ -146,10 +146,10 @@ Bitrate de Áudio: 128k AAC
 
 ---
 
-## 4. ÁUDIO (AAC)
+## 4. ÁUDIO DO VÍDEO (AAC)
 
-### Por que AAC?
-- **Codec moderno**: MP3 é obsoleto
+### Por que AAC no MP4 final?
+- **Codec moderno**: Melhor escolha para áudio dentro de MP4
 - **Compatibilidade**: Suportado por tudo que H.264
 - **Eficiência**: Excelente qualidade a 128kbps
 
@@ -168,7 +168,30 @@ Bitrate de Áudio: 128k AAC
 
 ---
 
-## 5. CONTAINER MP4
+## 5. EXTRAÇÃO DE ÁUDIO (MP3)
+
+### Quando usar
+- Separar áudio de uma evidência
+- Enviar apenas a fala de um vídeo
+- Usar o áudio em transcrição, análise ou documentação
+
+### Configuração aplicada
+```bash
+-vn                 # Ignora o vídeo
+-c:a libmp3lame     # Codifica áudio em MP3
+-b:a 192k           # Bitrate do MP3
+```
+
+O programa verifica se existe uma faixa de áudio antes de iniciar a extração. Se o vídeo não tiver áudio, ele mostra erro sem gerar arquivo vazio.
+
+### Por que MP3 aqui?
+- **Compatibilidade máxima**: Abre em praticamente qualquer sistema
+- **Arquivo separado**: Ideal para compartilhar ou anexar evidências
+- **Qualidade prática**: 192kbps preserva bem voz e áudio geral
+
+---
+
+## 6. CONTAINER MP4
 
 ### Por que MP4?
 ```
@@ -188,7 +211,7 @@ MP4 = MPEG-4 Part 14 (ISO/IEC 14496-14)
 
 ---
 
-## 6. REDIMENSIONAMENTO (Scale)
+## 7. REDIMENSIONAMENTO (Scale)
 
 ### Fórmula aplicada
 ```
@@ -216,7 +239,25 @@ Redução 4x (1080→270p): ~16x menos pixels = ~90% menos dados
 
 ---
 
-## 7. ESTRATÉGIA RECOMENDADA
+## 8. ROTAÇÃO MANUAL
+
+### Quando usar
+- Vídeo veio deitado e precisa ficar em pé
+- Vídeo foi gravado com orientação errada
+- Vídeo precisa ser virado em 180°
+
+### Filtros aplicados
+```bash
+90° direita:  transpose=1
+90° esquerda: transpose=2
+180°:          hflip,vflip
+```
+
+A rotação entra no mesmo pipeline de filtros do FFmpeg. Quando há rotação e redimensionamento ao mesmo tempo, o vídeo é rotacionado primeiro e depois recebe o `scale`.
+
+---
+
+## 9. ESTRATÉGIA RECOMENDADA
 
 ### Para máxima compressão (sem sacrificar demais):
 
@@ -238,7 +279,7 @@ Redução 4x (1080→270p): ~16x menos pixels = ~90% menos dados
 
 ---
 
-## 8. COMPARAÇÃO PRÁTICA
+## 10. COMPARAÇÃO PRÁTICA
 
 ### Vídeo típico: 1 hora, 1080p, 60fps
 
@@ -252,7 +293,7 @@ Redução 4x (1080→270p): ~16x menos pixels = ~90% menos dados
 
 ---
 
-## 9. VALIDAÇÃO CIENTÍFICA
+## 11. VALIDAÇÃO CIENTÍFICA
 
 ### Origem dos valores de CRF:
 - **Pesquisa VQEG**: Validou escalas de qualidade

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Caminhos expostos pelo FileProvider usado para compartilhar/abrir o video comprimido
+  quando o app salva no diretorio especifico do app (fallback do Android anterior ao 10).
+  Precisa corresponder a getExternalFilesDir(Environment.DIRECTORY_MOVIES) usado em
+  MainActivity.saveOutputFile().
+-->
+<paths>
+    <external-files-path name="movies" path="Movies/" />
+</paths>

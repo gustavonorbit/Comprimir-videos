@@ -10,7 +10,9 @@ Um programa desktop simples, rápido e profissional para compressão de vídeos 
 - **Saída universal em MP4**: Máxima compatibilidade
 - **4 perfis de compressão**: Da alta qualidade à máxima compressão
 - **Controle de resolução**: Original, 1080p, 720p ou 480p
+- **Rotação manual**: Vire vídeos em 90° para direita, 90° para esquerda ou 180°
 - **Opção de remover áudio**: Para compressão ainda maior
+- **Extração de áudio em MP3**: Gera um arquivo `.mp3` a partir do vídeo importado
 - **Processamento não bloqueante**: Interface responsiva com barra de progresso real
 - **Pronto para empacotamento**: Estrutura preparada para PyInstaller
 
@@ -92,6 +94,7 @@ python main.py
 2. **Configure a Compressão**
    - **Qualidade**: Escolha entre Alta Qualidade, Balanceado, Compressão Forte ou Máxima
    - **Resolução**: Mantenha original ou reduza para 1080p, 720p ou 480p
+   - **Rotação**: Use quando o vídeo estiver deitado ou invertido
    - **Áudio**: Opcionalmente remova para compressão ainda maior
 
 3. **Defina Pasta de Saída** (opcional)
@@ -102,8 +105,13 @@ python main.py
    - Acompanhe o progresso em tempo real
    - Use "Cancelar" se precisar interromper
 
+   **Ou clique em "EXTRAIR MP3"**
+   - O programa salva o áudio do vídeo em um arquivo `.mp3`
+   - Se o vídeo não tiver áudio, a ferramenta avisa antes de processar
+
 5. **Veja os Resultados**
-   - Tamanho original, final e percentual de redução
+   - Na compressão: tamanho original, final e percentual de redução
+   - Na extração: tamanho final do MP3
    - Abra a pasta contendo o arquivo final
 
 ## ⚙️ Perfis de Compressão Explicados
@@ -146,6 +154,8 @@ O programa usa o codec H.264 (MPEG-4 AVC), que é:
 - **Codec de áudio**: AAC @ 128kbps (padrão)
 - **Container**: MP4 (máxima compatibilidade)
 - **Otimização**: Fast start para streaming progressivo
+- **Rotação**: Filtros FFmpeg `transpose`, `hflip` e `vflip`
+- **Extração MP3**: libmp3lame @ 192kbps
 
 ## 📦 Criar Executável com PyInstaller
 

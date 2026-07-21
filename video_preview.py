@@ -8,6 +8,7 @@ tk.PhotoImage. Não reproduz áudio e não depende de player externo instalado.
 import os
 import subprocess
 import threading
+import time
 from typing import Callable, Optional
 
 import customtkinter as ctk
@@ -185,7 +186,14 @@ class PreviewMuteButton:
 class VideoPreview:
     """Preview básico por frames para CustomTkinter."""
 
-    FRAME_INTERVAL_MS = 280
+    FRAME_INTERVAL_MS = 160
+    TIME_LABEL_INTERVAL_MS = 140
+    HANDLE_VISIBLE_SIZE = 8
+    HANDLE_HOVER_SIZE = 10
+    HANDLE_ACTIVE_SIZE = 11
+    HANDLE_SIDE_HIT_RADIUS = 10
+    HANDLE_CORNER_HIT_RADIUS = 12
+    HANDLE_EDGE_HIT_RADIUS = 7
 
     def __init__(
         self,
@@ -208,6 +216,7 @@ class VideoPreview:
         self.is_playing = False
         self.is_muted = True
         self.is_destroyed = False
+        self.editing_enabled = True
         self.is_selecting_blur_region = False
         self._time_change_callback: Optional[Callable[[float, str], None]] = None
         self._playback_change_callback: Optional[Callable[[bool], None]] = None
@@ -219,12 +228,29 @@ class VideoPreview:
         self._selection_start: Optional[tuple[float, float]] = None
         self._selection_current: Optional[tuple[float, float]] = None
         self._overlay_drag: Optional[dict] = None
+        self._overlay_hover_mode: Optional[str] = None
+        self._overlay_active_mode: Optional[str] = None
         self._request_id = 0
         self._frame_in_flight = False
+        self._in_flight_request_id: Optional[int] = None
+        self._pending_frame_seconds: Optional[float] = None
         self._play_after_id = None
         self._seek_after_id = None
         self._stage_resize_after_id = None
         self._current_image = None
+        self._playback_started_at = 0.0
+        self._playback_base_time = 0.0
+        self._last_time_label_update_at = 0.0
+        self._metrics_window_started_at = time.perf_counter()
+        self._frame_metrics = {
+            "started": 0,
+            "applied": 0,
+            "dropped": 0,
+            "errors": 0,
+            "queued": 0,
+            "total_ms": 0.0,
+            "max_ms": 0.0,
+        }
 
         self.frame = ctk.CTkFrame(
             parent,
@@ -278,7 +304,7 @@ class VideoPreview:
         self.image_label.bind("<B1-Motion>", self._on_blur_selection_drag)
         self.image_label.bind("<ButtonRelease-1>", self._on_blur_selection_release)
         self.image_label.bind("<Motion>", self._on_overlay_motion)
-        self.image_label.bind("<Leave>", lambda _event: self._set_cursor(""))
+        self.image_label.bind("<Leave>", self._on_overlay_leave)
 
         self.empty_state = ctk.CTkFrame(
             self.stage,
@@ -391,10 +417,32 @@ class VideoPreview:
     def set_time_mapper(self, callback: Optional[Callable[[float], Optional[tuple]]]):
         self._time_mapper = callback
 
+    def set_editing_enabled(self, enabled: bool):
+        self.editing_enabled = bool(enabled)
+        if self.editing_enabled:
+            return
+
+        self.cancel_blur_selection()
+        if self._overlay_drag is not None:
+            if self._overlay_edit_end_callback is not None:
+                try:
+                    self._overlay_edit_end_callback()
+                except Exception:
+                    pass
+            self._release_pointer_grab()
+        self._overlay_drag = None
+        self._overlay_hover_mode = None
+        self._overlay_active_mode = None
+        self._set_cursor("")
+        self._draw_blur_overlay()
+
     def show_empty(self):
         self._current_image = None
         self.blur_states = []
         self.editor_overlays = []
+        self._overlay_drag = None
+        self._overlay_hover_mode = None
+        self._overlay_active_mode = None
         self.controls.grid_remove()
         self._show_empty_state("A prévia do vídeo aparecerá aqui.", "▷", self.font(13, "bold"))
         self._set_controls_enabled(False)
@@ -433,24 +481,21 @@ class VideoPreview:
     def set_duration(self, duration: float, refresh: bool = False):
         self.duration = max(0.0, float(duration or 0.0))
         self.current_time = max(0.0, min(self.current_time, self.duration))
-        self._sync_seek_from_time()
-        self._update_time_label()
+        self._sync_time_controls(force=True)
         if refresh and self.media_path:
-            self._request_id += 1
-            self._frame_in_flight = False
-            self.request_frame(self.current_time)
+            self._invalidate_and_request_frame(self.current_time)
 
     def seek_to(self, seconds: float, source: str = "external", request_frame: bool = True, emit: bool = False):
         if not self.media_path:
             return
 
         self.current_time = max(0.0, min(float(seconds), self.duration if self.duration > 0 else float(seconds)))
-        self._sync_seek_from_time()
-        self._update_time_label()
+        if self.is_playing and source != "playback":
+            self._playback_base_time = self.current_time
+            self._playback_started_at = time.monotonic()
+        self._sync_time_controls(force=(not self.is_playing or source != "playback"))
         if request_frame:
-            self._request_id += 1
-            self._frame_in_flight = False
-            self.request_frame(self.current_time)
+            self._invalidate_and_request_frame(self.current_time)
         if emit:
             self._emit_time_change(source)
 
@@ -465,25 +510,26 @@ class VideoPreview:
         was_playing = self.is_playing
         current_time = self.current_time
         self.rotation_degrees = rotation_degrees
-        self._request_id += 1
-        self._frame_in_flight = False
 
         if self._play_after_id is not None:
             self._cancel_after(self._play_after_id)
             self._play_after_id = None
 
         self.current_time = current_time
-        self.request_frame(current_time)
+        self._invalidate_and_request_frame(current_time)
 
         if was_playing:
             self.is_playing = True
             self.btn_play.configure(text="❚❚")
+            self._playback_base_time = current_time
+            self._playback_started_at = time.monotonic()
 
     def set_blur_states(self, blur_states: list[BlurState], refresh: bool = True):
         """Atualiza os blurs temporais ativos no instante atual."""
         self.blur_states = [state.copy() for state in blur_states if state and state.has_effect()]
         self._request_id += 1
-        self._frame_in_flight = False
+        if self._frame_in_flight:
+            self._pending_frame_seconds = self.current_time
         self._draw_blur_overlay()
 
         if refresh and self.media_path:
@@ -494,7 +540,7 @@ class VideoPreview:
         self._draw_blur_overlay()
 
     def show_unavailable(self, message: str = "Prévia indisponível para este vídeo."):
-        self.pause()
+        self.pause(refresh_frame=False)
         self._current_image = None
         self.controls.grid_remove()
         self.cancel_blur_selection()
@@ -502,7 +548,7 @@ class VideoPreview:
         self._set_controls_enabled(False)
 
     def release_media(self):
-        self.pause()
+        self.pause(refresh_frame=False)
         self.cancel_blur_selection()
         self._request_id += 1
         self.media_path = None
@@ -513,7 +559,12 @@ class VideoPreview:
         self.rotation_degrees = 0
         self.blur_states = []
         self.editor_overlays = []
+        self._overlay_drag = None
+        self._overlay_hover_mode = None
+        self._overlay_active_mode = None
         self._frame_in_flight = False
+        self._in_flight_request_id = None
+        self._pending_frame_seconds = None
         if self._seek_after_id is not None:
             self._cancel_after(self._seek_after_id)
             self._seek_after_id = None
@@ -529,7 +580,7 @@ class VideoPreview:
 
     def pause_for_processing(self) -> bool:
         was_playing = self.is_playing
-        self.pause()
+        self.pause(refresh_frame=False)
         return was_playing
 
     def toggle_play(self):
@@ -545,12 +596,18 @@ class VideoPreview:
         if not self.media_path or self.is_destroyed:
             return
 
+        if self.duration > 0 and self.current_time >= self.duration:
+            self.current_time = 0.0
+
         self.is_playing = True
         self.btn_play.configure(text="❚❚")
+        self._playback_base_time = self.current_time
+        self._playback_started_at = time.monotonic()
+        self._reset_frame_metrics()
         self._emit_playback_change(True)
         self._schedule_next_frame(0)
 
-    def pause(self):
+    def pause(self, refresh_frame: bool = True):
         was_playing = self.is_playing
         self.is_playing = False
         try:
@@ -563,26 +620,29 @@ class VideoPreview:
             self._play_after_id = None
 
         if was_playing:
+            self._log_frame_metrics(force=True)
             self._emit_playback_change(False)
+            if refresh_frame and self.media_path and not self.is_destroyed:
+                self._invalidate_and_request_frame(self.current_time)
 
     def restart(self):
         if not self.media_path:
             return
 
-        self._request_id += 1
-        self._frame_in_flight = False
         self.current_time = 0.0
-        self.seek_slider.set(0)
-        self._update_time_label()
+        if self.is_playing:
+            self._playback_base_time = 0.0
+            self._playback_started_at = time.monotonic()
+        self._sync_time_controls(force=True)
         self._emit_time_change("player")
-        self.request_frame(0.0)
+        self._invalidate_and_request_frame(0.0)
 
     def toggle_mute(self):
         self.is_muted = not self.is_muted
         self.btn_mute.set_muted(self.is_muted)
 
     def start_blur_selection(self, callback: Callable[[NormalizedRect], None]):
-        if not self.media_path:
+        if not self.media_path or not self.editing_enabled:
             return
 
         self.is_selecting_blur_region = True
@@ -623,18 +683,24 @@ class VideoPreview:
         if not self.media_path or self.is_destroyed:
             return
 
+        display_seconds = max(0.0, min(float(seconds), self.duration if self.duration > 0 else float(seconds)))
         if self._frame_in_flight:
+            self._pending_frame_seconds = display_seconds
+            self._frame_metrics["queued"] += 1
             return
 
         width, height = self._stage_size()
         request_id = self._request_id
-        display_seconds = max(0.0, min(float(seconds), self.duration if self.duration > 0 else float(seconds)))
         media_path, source_seconds, mapped_width, mapped_height = self._map_timeline_time(display_seconds)
         rotation_degrees = self.rotation_degrees
         blur_states = [state.copy() for state in self.blur_states]
+        if self.is_playing:
+            blur_states = self._preview_playback_blurs(blur_states)
         source_width = mapped_width or self.source_width
         source_height = mapped_height or self.source_height
         self._frame_in_flight = True
+        self._in_flight_request_id = request_id
+        self._frame_metrics["started"] += 1
 
         thread = threading.Thread(
             target=self._extract_frame_worker,
@@ -667,6 +733,7 @@ class VideoPreview:
         source_height: int,
         request_id: int
     ):
+        started_at = time.perf_counter()
         try:
             vf = self._build_filter(width, height, rotation_degrees, blur_states, source_width, source_height)
             cmd = [
@@ -686,9 +753,13 @@ class VideoPreview:
             if result.returncode != 0 or not result.stdout:
                 raise RuntimeError("frame unavailable")
 
-            self._schedule_ui(lambda data=result.stdout, ts=display_seconds, rid=request_id: self._apply_frame(data, ts, rid))
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            self._schedule_ui(
+                lambda data=result.stdout, ts=display_seconds, rid=request_id, ms=elapsed_ms: self._apply_frame(data, ts, rid, ms)
+            )
         except Exception:
-            self._schedule_ui(lambda rid=request_id: self._handle_frame_error(rid))
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            self._schedule_ui(lambda rid=request_id, ms=elapsed_ms: self._handle_frame_error(rid, ms))
 
     def _build_filter(
         self,
@@ -726,37 +797,55 @@ class VideoPreview:
 
         return self.media_path or "", max(0.0, float(seconds)), self.source_width, self.source_height
 
-    def _apply_frame(self, data: bytes, seconds: float, request_id: int):
-        self._frame_in_flight = False
+    def _apply_frame(self, data: bytes, seconds: float, request_id: int, elapsed_ms: float = 0.0):
+        current_in_flight = request_id == self._in_flight_request_id
+        if current_in_flight:
+            self._frame_in_flight = False
+            self._in_flight_request_id = None
 
         if self.is_destroyed or request_id != self._request_id:
+            self._frame_metrics["dropped"] += 1
+            if current_in_flight:
+                self._request_pending_frame()
             return
 
         try:
             image = tk.PhotoImage(data=data, format="png")
             self._current_image = image
             self._hide_empty_state()
-            self.image_label.delete("all")
+            self.image_label.delete("frame_image")
             self.image_label.create_image(0, 0, image=image, anchor="nw", tags=("frame_image",))
+            self.image_label.tag_lower("frame_image")
             self._draw_blur_overlay()
-            self.current_time = seconds
-            self._sync_seek_from_time()
-            self._update_time_label()
-            self._emit_time_change("player")
+            if not self.is_playing:
+                self.current_time = seconds
+                self._sync_time_controls(force=True)
+                self._emit_time_change("player")
+            else:
+                self.current_time = self._playback_target_time()
+                self._sync_time_controls()
         except Exception:
             self.show_unavailable()
             return
 
+        self._frame_metrics["applied"] += 1
+        self._frame_metrics["total_ms"] += max(0.0, float(elapsed_ms or 0.0))
+        self._frame_metrics["max_ms"] = max(self._frame_metrics["max_ms"], float(elapsed_ms or 0.0))
+        self._log_frame_metrics()
+
+        if self._request_pending_frame():
+            return
+
         if self.is_playing:
-            next_time = seconds + (self.FRAME_INTERVAL_MS / 1000)
-            if self.duration > 0 and next_time >= self.duration:
+            target_time = self._playback_target_time()
+            if self.duration > 0 and target_time >= self.duration:
                 self.current_time = self.duration
                 self.pause()
-                self._sync_seek_from_time()
-                self._update_time_label()
+                self._sync_time_controls(force=True)
                 self._emit_time_change("player")
             else:
-                self._schedule_next_frame(self.FRAME_INTERVAL_MS, next_time)
+                delay_ms = max(10, int(self.FRAME_INTERVAL_MS - float(elapsed_ms or 0.0)))
+                self._schedule_next_frame(delay_ms)
 
     def _show_empty_state(self, text: str, icon: str, font):
         self.image_label.delete("all")
@@ -786,6 +875,9 @@ class VideoPreview:
         self._show_empty_state(message, icon, font)
 
     def _on_blur_selection_press(self, event):
+        if not self.editing_enabled:
+            return
+
         if not self.is_selecting_blur_region:
             self._start_overlay_drag(event)
             return
@@ -799,6 +891,9 @@ class VideoPreview:
         self._draw_blur_overlay()
 
     def _on_blur_selection_drag(self, event):
+        if not self.editing_enabled and self._overlay_drag is None:
+            return
+
         if not self.is_selecting_blur_region or self._selection_start is None:
             self._drag_overlay(event)
             return
@@ -811,6 +906,9 @@ class VideoPreview:
         self._draw_blur_overlay()
 
     def _on_blur_selection_release(self, event):
+        if not self.editing_enabled and self._overlay_drag is None:
+            return
+
         if not self.is_selecting_blur_region or self._selection_start is None:
             self._finish_overlay_drag(event)
             return
@@ -829,7 +927,7 @@ class VideoPreview:
             callback(rect)
 
     def _start_overlay_drag(self, event):
-        if self._overlay_change_callback is None:
+        if self._overlay_change_callback is None or not self.editing_enabled or self.is_playing:
             return
 
         selected = self._selected_overlay()
@@ -840,12 +938,8 @@ class VideoPreview:
         if canvas_rect is None:
             return
 
-        left, top, right, bottom = canvas_rect
-        if not (left <= event.x <= right and top <= event.y <= bottom):
-            return
-
-        mode = self._overlay_hit_mode(event.x, event.y, canvas_rect)
-        if mode is None:
+        mode = self._hit_test_blur_handle(event.x, event.y, canvas_rect)
+        if mode == "outside":
             return
 
         if self._overlay_edit_start_callback is not None:
@@ -854,6 +948,12 @@ class VideoPreview:
             except Exception:
                 pass
         self._set_cursor(self._cursor_for_mode(mode, dragging=True))
+        self._overlay_active_mode = mode
+        self._overlay_hover_mode = mode
+        try:
+            self.image_label.grab_set()
+        except Exception:
+            pass
 
         self._overlay_drag = {
             "id": selected["id"],
@@ -861,6 +961,7 @@ class VideoPreview:
             "start": (event.x, event.y),
             "region": selected["region"].clamped(),
         }
+        self._draw_blur_overlay()
 
     def _drag_overlay(self, event):
         if self._overlay_drag is None:
@@ -905,6 +1006,8 @@ class VideoPreview:
             except Exception:
                 pass
         self._overlay_drag = None
+        self._overlay_active_mode = None
+        self._release_pointer_grab()
         self._on_overlay_motion(event)
 
     def _resize_region(self, original: NormalizedRect, mode: str, delta_x: float, delta_y: float) -> NormalizedRect:
@@ -925,43 +1028,51 @@ class VideoPreview:
 
         return NormalizedRect(left, top, right - left, bottom - top)
 
-    def _overlay_hit_mode(
+    def _hit_test_blur_handle(
         self,
         x: float,
         y: float,
         canvas_rect: tuple[float, float, float, float]
-    ) -> Optional[str]:
+    ) -> str:
         left, top, right, bottom = canvas_rect
-        hit = 12
-        if not (left - hit <= x <= right + hit and top - hit <= y <= bottom + hit):
-            return None
+        corner_hit = self.HANDLE_CORNER_HIT_RADIUS
+        side_hit = self.HANDLE_SIDE_HIT_RADIUS
+        edge_hit = self.HANDLE_EDGE_HIT_RADIUS
+        if not (
+            left - corner_hit <= x <= right + corner_hit
+            and top - corner_hit <= y <= bottom + corner_hit
+        ):
+            return "outside"
 
-        near_left = abs(x - left) <= hit
-        near_right = abs(x - right) <= hit
-        near_top = abs(y - top) <= hit
-        near_bottom = abs(y - bottom) <= hit
+        for mode, center in self._overlay_handle_points(canvas_rect, corners_only=True).items():
+            cx, cy = center
+            if abs(x - cx) <= corner_hit and abs(y - cy) <= corner_hit:
+                return mode
 
-        if near_left and near_top:
-            return "nw"
-        if near_right and near_top:
-            return "ne"
-        if near_left and near_bottom:
-            return "sw"
-        if near_right and near_bottom:
-            return "se"
-        if near_left:
-            return "left"
-        if near_right:
-            return "right"
-        if near_top:
-            return "top"
-        if near_bottom:
-            return "bottom"
+        for mode, center in self._overlay_handle_points(canvas_rect, sides_only=True).items():
+            cx, cy = center
+            if abs(x - cx) <= side_hit and abs(y - cy) <= side_hit:
+                return mode
+
+        if top + corner_hit < y < bottom - corner_hit:
+            if abs(x - left) <= edge_hit:
+                return "left"
+            if abs(x - right) <= edge_hit:
+                return "right"
+        if left + corner_hit < x < right - corner_hit:
+            if abs(y - top) <= edge_hit:
+                return "top"
+            if abs(y - bottom) <= edge_hit:
+                return "bottom"
         if left <= x <= right and top <= y <= bottom:
             return "move"
-        return None
+        return "outside"
 
     def _on_overlay_motion(self, event):
+        if not self.editing_enabled or self.is_playing:
+            self._set_overlay_hover_mode(None)
+            self._set_cursor("")
+            return
         if self.is_selecting_blur_region:
             self._set_cursor("crosshair")
             return
@@ -971,16 +1082,30 @@ class VideoPreview:
 
         selected = self._selected_overlay()
         if selected is None:
+            self._set_overlay_hover_mode(None)
             self._set_cursor("")
             return
 
         canvas_rect = self._region_to_canvas_rect(selected["region"])
         if canvas_rect is None:
+            self._set_overlay_hover_mode(None)
             self._set_cursor("")
             return
 
-        mode = self._overlay_hit_mode(event.x, event.y, canvas_rect)
-        self._set_cursor(self._cursor_for_mode(mode) if mode else "")
+        mode = self._hit_test_blur_handle(event.x, event.y, canvas_rect)
+        self._set_overlay_hover_mode(None if mode == "outside" else mode)
+        self._set_cursor(self._cursor_for_mode(mode) if mode != "outside" else "")
+
+    def _on_overlay_leave(self, _event):
+        if self._overlay_drag is None:
+            self._set_overlay_hover_mode(None)
+        self._set_cursor("")
+
+    def _set_overlay_hover_mode(self, mode: Optional[str]):
+        if self._overlay_hover_mode == mode:
+            return
+        self._overlay_hover_mode = mode
+        self._draw_blur_overlay()
 
     def _cursor_for_mode(self, mode: Optional[str], dragging: bool = False) -> str:
         if mode in ("left", "right"):
@@ -1096,6 +1221,8 @@ class VideoPreview:
                     color,
                     selected=selected,
                     label=overlay.get("name", ""),
+                    hover_mode=self._overlay_hover_mode if selected else None,
+                    active_mode=self._overlay_active_mode if selected else None,
                 )
         if self.is_selecting_blur_region and self._selection_start and self._selection_current:
             start_x, start_y = self._selection_start
@@ -1136,7 +1263,9 @@ class VideoPreview:
         tag: str,
         color: str,
         selected: bool = False,
-        label: str = ""
+        label: str = "",
+        hover_mode: Optional[str] = None,
+        active_mode: Optional[str] = None,
     ):
         left, top, right, bottom = canvas_rect
         self.image_label.create_rectangle(
@@ -1169,26 +1298,31 @@ class VideoPreview:
                 tags=(tag,)
             )
         if selected:
-            handle_size = 6
-            points = (
-                (left, top),
-                (right, top),
-                (left, bottom),
-                (right, bottom),
-                ((left + right) / 2, top),
-                ((left + right) / 2, bottom),
-                (left, (top + bottom) / 2),
-                (right, (top + bottom) / 2),
-            )
-            for x, y in points:
+            points = self._overlay_handle_points(canvas_rect)
+            for mode, (x, y) in points.items():
+                if active_mode == mode:
+                    handle_size = self.HANDLE_ACTIVE_SIZE
+                    outline = "#FFFFFF"
+                    fill = color
+                    width = 2
+                elif hover_mode == mode:
+                    handle_size = self.HANDLE_HOVER_SIZE
+                    outline = color
+                    fill = "#FFFFFF"
+                    width = 2
+                else:
+                    handle_size = self.HANDLE_VISIBLE_SIZE
+                    outline = color
+                    fill = "#FFFFFF"
+                    width = 1
                 self.image_label.create_rectangle(
                     x - handle_size / 2,
                     y - handle_size / 2,
                     x + handle_size / 2,
                     y + handle_size / 2,
-                    fill="#FFFFFF",
-                    outline=color,
-                    width=1,
+                    fill=fill,
+                    outline=outline,
+                    width=width,
                     tags=(tag,),
                 )
             self.image_label.create_oval(
@@ -1200,6 +1334,33 @@ class VideoPreview:
                 outline="#FFFFFF",
                 tags=(tag,),
             )
+
+    def _overlay_handle_points(
+        self,
+        canvas_rect: tuple[float, float, float, float],
+        corners_only: bool = False,
+        sides_only: bool = False,
+    ) -> dict[str, tuple[float, float]]:
+        left, top, right, bottom = canvas_rect
+        center_x = (left + right) / 2
+        center_y = (top + bottom) / 2
+        corners = {
+            "nw": (left, top),
+            "ne": (right, top),
+            "sw": (left, bottom),
+            "se": (right, bottom),
+        }
+        sides = {
+            "top": (center_x, top),
+            "bottom": (center_x, bottom),
+            "left": (left, center_y),
+            "right": (right, center_y),
+        }
+        if corners_only:
+            return corners
+        if sides_only:
+            return sides
+        return {**corners, **sides}
 
     def _selected_overlay(self) -> Optional[dict]:
         for overlay in self.editor_overlays:
@@ -1215,21 +1376,31 @@ class VideoPreview:
                 overlay["region"] = region.clamped()
                 return
 
-    def _handle_frame_error(self, request_id: int):
-        self._frame_in_flight = False
+    def _handle_frame_error(self, request_id: int, elapsed_ms: float = 0.0):
+        current_in_flight = request_id == self._in_flight_request_id
+        if current_in_flight:
+            self._frame_in_flight = False
+            self._in_flight_request_id = None
         if self.is_destroyed or request_id != self._request_id:
+            self._frame_metrics["dropped"] += 1
+            if current_in_flight:
+                self._request_pending_frame()
             return
 
+        self._frame_metrics["errors"] += 1
+        self._frame_metrics["total_ms"] += max(0.0, float(elapsed_ms or 0.0))
+        self._frame_metrics["max_ms"] = max(self._frame_metrics["max_ms"], float(elapsed_ms or 0.0))
+        self._log_frame_metrics()
         self.show_unavailable()
 
     def _schedule_next_frame(self, delay_ms: int, seconds: Optional[float] = None):
         if self._play_after_id is not None:
             self._cancel_after(self._play_after_id)
 
-        target_time = self.current_time if seconds is None else seconds
+        target_time = self._playback_target_time() if seconds is None and self.is_playing else (self.current_time if seconds is None else seconds)
         self._play_after_id = self.frame.after(
             delay_ms,
-            lambda: self.request_frame(target_time)
+            lambda: self.request_frame(self._playback_target_time() if self.is_playing else target_time)
         )
 
     def _on_seek(self, value):
@@ -1237,7 +1408,10 @@ class VideoPreview:
             return
 
         self.current_time = float(value) * self.duration
-        self._update_time_label()
+        if self.is_playing:
+            self._playback_base_time = self.current_time
+            self._playback_started_at = time.monotonic()
+        self._sync_time_controls(force=True)
         self._emit_time_change("player")
 
         if self._seek_after_id is not None:
@@ -1247,20 +1421,27 @@ class VideoPreview:
 
     def _apply_seek(self):
         self._seek_after_id = None
-        self._request_id += 1
-        self._frame_in_flight = False
-        self.request_frame(self.current_time)
+        self._invalidate_and_request_frame(self.current_time)
 
-    def _sync_seek_from_time(self):
+    def _sync_time_controls(self, force: bool = False):
+        now = time.monotonic()
+        if not force and self.is_playing and (now - self._last_time_label_update_at) * 1000 < self.TIME_LABEL_INTERVAL_MS:
+            return
+
         if self.duration > 0:
             self.seek_slider.set(max(0.0, min(1.0, self.current_time / self.duration)))
         else:
             self.seek_slider.set(0)
-
-    def _update_time_label(self):
         self.time_label.configure(
             text=f"{self._format_time(self.current_time)} / {self._format_time(self.duration)}"
         )
+        self._last_time_label_update_at = now
+
+    def _sync_seek_from_time(self):
+        self._sync_time_controls(force=True)
+
+    def _update_time_label(self):
+        self._sync_time_controls(force=True)
 
     def _set_controls_enabled(self, enabled: bool):
         state = "normal" if enabled else "disabled"
@@ -1286,6 +1467,81 @@ class VideoPreview:
 
         try:
             self.frame.after(0, callback)
+        except Exception:
+            pass
+
+    def _playback_target_time(self) -> float:
+        if not self.is_playing:
+            return self.current_time
+
+        elapsed = time.monotonic() - self._playback_started_at
+        target = self._playback_base_time + max(0.0, elapsed)
+        if self.duration > 0:
+            return max(0.0, min(self.duration, target))
+        return max(0.0, target)
+
+    def _preview_playback_blurs(self, blur_states: list[BlurState]) -> list[BlurState]:
+        optimized = []
+        for state in blur_states:
+            clone = state.copy()
+            clone.intensity = min(float(clone.intensity or 0.0), 0.72)
+            optimized.append(clone)
+        return optimized
+
+    def _invalidate_and_request_frame(self, seconds: float):
+        target = max(0.0, min(float(seconds), self.duration if self.duration > 0 else float(seconds)))
+        self._request_id += 1
+        if self._frame_in_flight:
+            self._pending_frame_seconds = target
+            self._frame_metrics["queued"] += 1
+            return
+        self.request_frame(target)
+
+    def _request_pending_frame(self) -> bool:
+        pending = self._pending_frame_seconds
+        self._pending_frame_seconds = None
+        if pending is None or self.is_destroyed or not self.media_path:
+            return False
+
+        self.request_frame(pending)
+        return True
+
+    def _reset_frame_metrics(self):
+        self._metrics_window_started_at = time.perf_counter()
+        self._frame_metrics = {
+            "started": 0,
+            "applied": 0,
+            "dropped": 0,
+            "errors": 0,
+            "queued": 0,
+            "total_ms": 0.0,
+            "max_ms": 0.0,
+        }
+
+    def _log_frame_metrics(self, force: bool = False):
+        now = time.perf_counter()
+        elapsed = max(0.001, now - self._metrics_window_started_at)
+        if not force and elapsed < 5.0:
+            return
+
+        metrics = self._frame_metrics
+        completed = metrics["applied"] + metrics["errors"]
+        if completed <= 0 and not force:
+            return
+
+        avg_ms = metrics["total_ms"] / max(1, completed)
+        fps = metrics["applied"] / elapsed
+        print(
+            "[preview] "
+            f"fps={fps:.1f} avg_frame={avg_ms:.1f}ms max_frame={metrics['max_ms']:.1f}ms "
+            f"started={metrics['started']} applied={metrics['applied']} "
+            f"queued_latest={metrics['queued']} dropped={metrics['dropped']} errors={metrics['errors']}"
+        )
+        self._reset_frame_metrics()
+
+    def _release_pointer_grab(self):
+        try:
+            self.image_label.grab_release()
         except Exception:
             pass
 

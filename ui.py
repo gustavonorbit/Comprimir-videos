@@ -10,7 +10,6 @@ import subprocess
 import tkinter as tk
 import threading
 import time
-from datetime import timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Optional
@@ -108,6 +107,14 @@ class VideoCompressorGUI:
     DANGER_SOFT_COLOR = "#FFF2F1"
     DISABLED_COLOR = "#B8C0CC"
 
+    METADATA_CHIP_HEIGHT = 30
+    METADATA_CHIP_PAD_X = 8
+    METADATA_CHIP_GAP = 6
+    METADATA_WRAP_THRESHOLD = 430
+    TOOL_ICON_BUTTON_SIZE = 42
+    TOOL_ICON_GAP = 8
+    TOOL_ICON_RADIUS = 10
+
     def __init__(self, root: ctk.CTk):
         """Inicializa a interface gráfica."""
         self.root = root
@@ -124,6 +131,8 @@ class VideoCompressorGUI:
         self._playback_tick_after_id = None
         self._playback_tick_started_at = 0.0
         self._playback_tick_base_time = 0.0
+        self.playback_mode = False
+        self._playback_label_last_update_at = 0.0
         self._last_active_filter_ids: set[str] = set()
         self.processing_blur_enabled = False
         self.processing_temporal_blurs = []
@@ -239,7 +248,7 @@ class VideoCompressorGUI:
             return False
 
         self.options_content.update_idletasks()
-        return self.options_content.winfo_width() < 900
+        return self.options_content.winfo_width() < self._options_single_line_min_width()
 
     def _on_close(self):
         self._cancel_playback_tick()
@@ -344,6 +353,7 @@ class VideoCompressorGUI:
         self.label_duration.configure(text="--")
         self.label_resolution.configure(text="--")
         self.label_codec.configure(text="--")
+        self._refresh_metadata_layout()
 
     def _build_header(self, parent):
         header = ctk.CTkFrame(parent, fg_color="transparent", height=62)
@@ -490,20 +500,18 @@ class VideoCompressorGUI:
         self.metadata_row = ctk.CTkFrame(self.options_content, fg_color="transparent")
         self.controls_row = ctk.CTkFrame(self.options_content, fg_color="transparent")
         self.metadata_chip_frames = []
+        self._metadata_multiline: Optional[bool] = None
 
-        for column in range(4):
-            self.metadata_row.grid_columnconfigure(column, weight=1, uniform="metadata")
-
-        self.label_file_size = self._create_chip(self.metadata_row, 0, "Tamanho", "--")
-        self.label_duration = self._create_chip(self.metadata_row, 1, "Duração", "--")
-        self.label_resolution = self._create_chip(self.metadata_row, 2, "Resolução", "--")
-        self.label_codec = self._create_chip(self.metadata_row, 3, "Codec", "--")
+        self.label_file_size = self._create_chip(self.metadata_row, 0, "Tamanho", "--", min_width=124)
+        self.label_duration = self._create_chip(self.metadata_row, 1, "Duração", "--", min_width=102)
+        self.label_resolution = self._create_chip(self.metadata_row, 2, "Resolução", "--", min_width=138)
+        self.label_codec = self._create_chip(self.metadata_row, 3, "Codec", "--", min_width=92)
 
         self.controls_row.grid_columnconfigure(0, weight=0, minsize=150)
         self.controls_row.grid_columnconfigure(1, weight=0, minsize=112)
-        self.controls_row.grid_columnconfigure(2, weight=0, minsize=58)
-        self.controls_row.grid_columnconfigure(3, weight=0, minsize=48)
-        self.controls_row.grid_columnconfigure(4, weight=0, minsize=84)
+        self.controls_row.grid_columnconfigure(2, weight=0, minsize=self.TOOL_ICON_BUTTON_SIZE)
+        self.controls_row.grid_columnconfigure(3, weight=0, minsize=self.TOOL_ICON_BUTTON_SIZE)
+        self.controls_row.grid_columnconfigure(4, weight=0, minsize=self.TOOL_ICON_BUTTON_SIZE)
         self.controls_row.grid_columnconfigure(5, weight=1)
 
         self.combo_profile = self._create_combo(
@@ -526,10 +534,10 @@ class VideoCompressorGUI:
             self.controls_row,
             text="↻",
             command=self._cycle_rotation,
-            font=self._font(12, "bold"),
-            width=58,
-            height=34,
-            corner_radius=10,
+            font=self._font(13, "bold"),
+            width=self.TOOL_ICON_BUTTON_SIZE,
+            height=self.TOOL_ICON_BUTTON_SIZE,
+            corner_radius=self.TOOL_ICON_RADIUS,
             fg_color="#FFFFFF",
             hover_color="#F2F6FB",
             text_color=self.TEXT_COLOR,
@@ -542,9 +550,9 @@ class VideoCompressorGUI:
             text="♪",
             command=self._toggle_remove_audio,
             font=self._font(13, "bold"),
-            width=48,
-            height=34,
-            corner_radius=10,
+            width=self.TOOL_ICON_BUTTON_SIZE,
+            height=self.TOOL_ICON_BUTTON_SIZE,
+            corner_radius=self.TOOL_ICON_RADIUS,
             fg_color="#FFFFFF",
             hover_color="#F2F6FB",
             text_color=self.TEXT_COLOR,
@@ -554,12 +562,12 @@ class VideoCompressorGUI:
 
         self.btn_split_clip = ctk.CTkButton(
             self.controls_row,
-            text="Dividir",
+            text="✂",
             command=self._split_clip,
-            font=self._font(12, "bold"),
-            width=84,
-            height=34,
-            corner_radius=10,
+            font=self._font(14, "bold"),
+            width=self.TOOL_ICON_BUTTON_SIZE,
+            height=self.TOOL_ICON_BUTTON_SIZE,
+            corner_radius=self.TOOL_ICON_RADIUS,
             fg_color="#FFFFFF",
             hover_color="#F2F6FB",
             text_color=self.TEXT_COLOR,
@@ -569,7 +577,7 @@ class VideoCompressorGUI:
 
         self.rotation_tooltip = Tooltip(self.btn_rotate, self._rotation_tooltip_text())
         self.audio_tooltip = Tooltip(self.btn_audio_toggle, self._audio_tooltip_text())
-        self.split_tooltip = Tooltip(self.btn_split_clip, "Dividir clipe no tempo atual")
+        self.split_tooltip = Tooltip(self.btn_split_clip, "Dividir o clipe na posição atual.")
 
         self._layout_options_bar(True)
 
@@ -580,20 +588,22 @@ class VideoCompressorGUI:
             text_color=self.SUBTLE_TEXT_COLOR,
             anchor="w"
         )
-        self.label_save_rule.grid(row=2, column=0, sticky="ew", pady=(7, 0))
+        self.label_save_rule.grid(row=2, column=0, sticky="ew", pady=(11, 0))
 
-    def _create_chip(self, parent, column: int, title: str, value: str) -> ctk.CTkLabel:
+    def _create_chip(self, parent, column: int, title: str, value: str, min_width: int) -> ctk.CTkLabel:
         chip = ctk.CTkFrame(
             parent,
             fg_color="#F5F8FC",
-            corner_radius=10,
+            corner_radius=11,
             border_width=1,
             border_color=self.BORDER_COLOR,
-            height=32
+            height=self.METADATA_CHIP_HEIGHT
         )
-        chip.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
+        chip.grid(row=0, column=column, sticky="w", padx=(0 if column == 0 else self.METADATA_CHIP_GAP, 0))
         chip.grid_propagate(False)
         chip.grid_columnconfigure(1, weight=1)
+        chip._metadata_title = title
+        chip._metadata_min_width = min_width
         if hasattr(self, "metadata_chip_frames"):
             self.metadata_chip_frames.append(chip)
 
@@ -601,17 +611,20 @@ class VideoCompressorGUI:
             chip,
             text=f"{title}:",
             font=self._font(9, "bold"),
-            text_color=self.SUBTLE_TEXT_COLOR
-        ).grid(row=0, column=0, sticky="w", padx=(8, 3), pady=6)
+            text_color=self.SUBTLE_TEXT_COLOR,
+            anchor="w"
+        ).grid(row=0, column=0, sticky="w", padx=(self.METADATA_CHIP_PAD_X, 3), pady=5)
 
         value_label = ctk.CTkLabel(
             chip,
             text=value,
             font=self._font(10, "bold"),
             text_color=self.TEXT_COLOR,
-            anchor="w"
+            anchor="w",
+            wraplength=0
         )
-        value_label.grid(row=0, column=1, sticky="ew", padx=(0, 7), pady=6)
+        chip._metadata_value_label = value_label
+        value_label.grid(row=0, column=1, sticky="ew", padx=(0, self.METADATA_CHIP_PAD_X), pady=5)
         return value_label
 
     def _build_editor_workspace(self, parent):
@@ -633,8 +646,6 @@ class VideoCompressorGUI:
             on_seek=self._set_current_time,
             on_filter_select=self._select_editor_filter,
             on_filter_changed=self._editor_filter_changed,
-            on_filter_delete=self._delete_editor_filter,
-            on_filter_duplicate=self._duplicate_editor_filter,
             on_segment_select=self._select_editor_segment,
             on_segment_delete=self._delete_editor_segment,
             on_segment_duplicate=self._duplicate_editor_segment,
@@ -651,29 +662,106 @@ class VideoCompressorGUI:
         for column in range(2):
             self.options_content.grid_columnconfigure(column, weight=0, minsize=0, uniform="")
 
+        available_width = self.options_content.winfo_width()
+        metadata_multiline = available_width < self.METADATA_WRAP_THRESHOLD
+        self._layout_metadata_chips(multiline=metadata_multiline)
+
         if wrapped:
-            self.options_content.grid_rowconfigure(0, weight=0, minsize=32)
-            self.options_content.grid_rowconfigure(1, weight=0, minsize=34)
+            self.options_content.grid_rowconfigure(0, weight=0, minsize=self._metadata_row_height(metadata_multiline))
+            self.options_content.grid_rowconfigure(1, weight=0, minsize=self.TOOL_ICON_BUTTON_SIZE)
             self.options_content.grid_columnconfigure(0, weight=1)
-            self.metadata_row.grid(row=0, column=0, sticky="ew")
-            self.controls_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+            self.metadata_row.grid(row=0, column=0, sticky="w")
+            self.controls_row.grid(row=1, column=0, sticky="e", pady=(8, 0))
         else:
-            self.options_content.grid_rowconfigure(0, weight=0, minsize=34)
+            self.options_content.grid_rowconfigure(0, weight=0, minsize=self.TOOL_ICON_BUTTON_SIZE)
             self.options_content.grid_rowconfigure(1, weight=0, minsize=0)
             self.options_content.grid_columnconfigure(0, weight=1)
             self.options_content.grid_columnconfigure(1, weight=0)
-            self.metadata_row.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+            self.metadata_row.grid(row=0, column=0, sticky="w", padx=(0, 12))
             self.controls_row.grid(row=0, column=1, sticky="e")
 
         self.combo_profile.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.combo_resolution.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        self.btn_rotate.grid(row=0, column=2, sticky="e", padx=(0, 8))
-        self.btn_audio_toggle.grid(row=0, column=3, sticky="e", padx=(0, 8))
+        self.btn_rotate.grid(row=0, column=2, sticky="e", padx=(0, self.TOOL_ICON_GAP))
+        self.btn_audio_toggle.grid(row=0, column=3, sticky="e", padx=(0, self.TOOL_ICON_GAP))
         self.btn_split_clip.grid(row=0, column=4, sticky="e")
         self._options_wrapped = wrapped
 
+    def _options_single_line_min_width(self) -> int:
+        metadata_width = self._metadata_required_width() if hasattr(self, "metadata_chip_frames") else 520
+        controls_width = 150 + 112 + (self.TOOL_ICON_BUTTON_SIZE * 3) + (self.TOOL_ICON_GAP * 4) + 8
+        return metadata_width + controls_width + 18
+
+    def _metadata_required_width(self) -> int:
+        if not hasattr(self, "metadata_chip_frames"):
+            return 0
+        gaps = max(0, len(self.metadata_chip_frames) - 1) * self.METADATA_CHIP_GAP
+        return sum(self._metadata_chip_width(chip) for chip in self.metadata_chip_frames) + gaps
+
+    def _metadata_chip_width(self, chip) -> int:
+        title = str(getattr(chip, "_metadata_title", ""))
+        min_width = int(getattr(chip, "_metadata_min_width", 110))
+        value_label = getattr(chip, "_metadata_value_label", None)
+        try:
+            value = str(value_label.cget("text") if value_label is not None else "")
+        except Exception:
+            value = ""
+
+        estimated = (self.METADATA_CHIP_PAD_X * 2) + int(len(title) * 5.2) + 4 + int(len(value) * 6.4)
+        return max(min_width, min(170, estimated))
+
+    def _metadata_row_height(self, multiline: bool) -> int:
+        if not multiline:
+            return self.METADATA_CHIP_HEIGHT
+        return (self.METADATA_CHIP_HEIGHT * 2) + self.METADATA_CHIP_GAP
+
+    def _layout_metadata_chips(self, multiline: bool):
+        if not hasattr(self, "metadata_chip_frames"):
+            return
+
+        self._metadata_multiline = multiline
+        for row in range(2):
+            self.metadata_row.grid_rowconfigure(row, weight=0, minsize=0)
+        for column in range(4):
+            self.metadata_row.grid_columnconfigure(column, weight=0, minsize=0, uniform="")
+
+        widths = [self._metadata_chip_width(chip) for chip in self.metadata_chip_frames]
+        if multiline:
+            column_widths = [0, 0]
+            for index, width in enumerate(widths):
+                column_widths[index % 2] = max(column_widths[index % 2], width)
+            for column, width in enumerate(column_widths):
+                self.metadata_row.grid_columnconfigure(column, weight=0, minsize=width, uniform="")
+            for index, chip in enumerate(self.metadata_chip_frames):
+                row = index // 2
+                column = index % 2
+                width = widths[index]
+                chip.configure(width=width, height=self.METADATA_CHIP_HEIGHT)
+                chip.grid_forget()
+                chip.grid(
+                    row=row,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else self.METADATA_CHIP_GAP, 0),
+                    pady=(0 if row == 0 else self.METADATA_CHIP_GAP, 0),
+                )
+            return
+
+        for column, width in enumerate(widths):
+            self.metadata_row.grid_columnconfigure(column, weight=0, minsize=width, uniform="")
+        for index, chip in enumerate(self.metadata_chip_frames):
+            width = widths[index]
+            chip.configure(width=width, height=self.METADATA_CHIP_HEIGHT)
+            chip.grid_forget()
+            chip.grid(row=0, column=index, sticky="w", padx=(0 if index == 0 else self.METADATA_CHIP_GAP, 0))
+
+    def _refresh_metadata_layout(self):
+        if not hasattr(self, "options_content"):
+            return
+        self._layout_options_bar(self._should_wrap_options())
+
     def _cycle_rotation(self):
-        if self.is_compressing:
+        if self.is_compressing or self._editing_locked_by_playback():
             return
 
         rotation_order = (0, 90, 180, 270)
@@ -717,7 +805,7 @@ class VideoCompressorGUI:
             self.video_preview.set_rotation(0)
 
     def _toggle_remove_audio(self):
-        if self.is_compressing:
+        if self.is_compressing or self._editing_locked_by_playback():
             return
 
         self.remove_audio = not self.remove_audio
@@ -777,12 +865,19 @@ class VideoCompressorGUI:
         can_split = (
             bool(self.input_file)
             and not self.is_compressing
+            and not self.playback_mode
             and self.editor_state.can_split_at(self.editor_state.playback.current_time)
         )
         self.btn_split_clip.configure(state="normal" if can_split else "disabled")
 
+    def _editing_locked_by_playback(self) -> bool:
+        if not self.playback_mode:
+            return False
+        self._add_status("Pause a prévia para editar.")
+        return True
+
     def _split_clip(self):
-        if self.is_compressing:
+        if self.is_compressing or self._editing_locked_by_playback():
             return
 
         if not self.input_file:
@@ -801,7 +896,7 @@ class VideoCompressorGUI:
         self._add_status(f"Clipe dividido em {self._format_timecode(current_time)}.")
 
     def _delete_selected_timeline_item(self):
-        if self.is_compressing:
+        if self.is_compressing or self._editing_locked_by_playback():
             return
 
         selected_segment = self.editor_state.selected_segment()
@@ -814,11 +909,15 @@ class VideoCompressorGUI:
             self._delete_editor_filter(selected_filter.id)
 
     def _undo_editor(self):
+        if self._editing_locked_by_playback():
+            return
         if self.editor_state.undo():
             self._refresh_editor_after_timeline_change(refresh_frame=True)
             self._add_status("Ação desfeita.")
 
     def _redo_editor(self):
+        if self._editing_locked_by_playback():
+            return
         if self.editor_state.redo():
             self._refresh_editor_after_timeline_change(refresh_frame=True)
             self._add_status("Ação refeita.")
@@ -1051,7 +1150,7 @@ class VideoCompressorGUI:
                 if source == "player":
                     self.editor_timeline.update_playhead()
                 else:
-                    self.editor_timeline.refresh(redraw_inspector=False)
+                    self.editor_timeline.refresh(redraw_context=False)
 
             if source != "player" and hasattr(self, "video_preview"):
                 self.video_preview.seek_to(current_time, source=source, request_frame=True, emit=False)
@@ -1064,18 +1163,58 @@ class VideoCompressorGUI:
 
     def _on_preview_playback_changed(self, is_playing: bool):
         self.editor_state.playback.is_playing = is_playing
+        self._set_playback_mode(is_playing)
         if is_playing:
             self._start_playback_tick()
         else:
             self._cancel_playback_tick()
         if hasattr(self, "editor_timeline"):
-            self.editor_timeline.update_playhead()
+            self.editor_timeline.update_playhead(update_label=True)
         self._update_split_button_state()
+
+    def _set_playback_mode(self, enabled: bool):
+        enabled = bool(enabled)
+        if self.playback_mode == enabled:
+            return
+
+        self.playback_mode = enabled
+        if hasattr(self, "video_preview"):
+            self.video_preview.set_editing_enabled(not enabled)
+
+        if enabled:
+            self._pending_timeline_blur_start = None
+            self.btn_compress.configure(state="disabled")
+            self.btn_extract_audio.configure(state="disabled")
+            self.btn_select_input.configure(state="disabled")
+            self.btn_add_input.configure(state="disabled")
+            self.combo_profile.configure(state="disabled")
+            self.combo_resolution.configure(state="disabled")
+            self.btn_rotate.configure(state="disabled")
+            self.btn_audio_toggle.configure(state="disabled")
+            self.btn_split_clip.configure(state="disabled")
+            if hasattr(self, "editor_timeline"):
+                self.editor_timeline.set_playback_mode(True)
+            self._add_status("Prévia em reprodução — pause para editar.")
+            return
+
+        if not self.is_compressing:
+            self.btn_compress.configure(state="normal")
+            self.btn_extract_audio.configure(state="normal")
+            self.btn_select_input.configure(state="normal")
+            self.btn_add_input.configure(state="normal")
+            self.combo_profile.configure(state="readonly")
+            self.combo_resolution.configure(state="readonly")
+            self.btn_rotate.configure(state="normal")
+            self.btn_audio_toggle.configure(state="normal")
+            self._update_split_button_state()
+            if hasattr(self, "editor_timeline"):
+                self.editor_timeline.set_playback_mode(False)
 
     def _start_playback_tick(self):
         self._cancel_playback_tick()
         self._playback_tick_base_time = self.editor_state.playback.current_time
         self._playback_tick_started_at = time.monotonic()
+        self._playback_label_last_update_at = 0.0
         self._schedule_playback_tick()
 
     def _schedule_playback_tick(self):
@@ -1095,7 +1234,8 @@ class VideoCompressorGUI:
         if not self.editor_state.playback.is_playing:
             return
 
-        elapsed = time.monotonic() - self._playback_tick_started_at
+        now = time.monotonic()
+        elapsed = now - self._playback_tick_started_at
         current_time = self.editor_state.playback.clamp_time(self._playback_tick_base_time + elapsed)
         self.editor_state.playback.set_time(current_time, "playback")
 
@@ -1106,10 +1246,14 @@ class VideoCompressorGUI:
         if hasattr(self, "video_preview"):
             self.video_preview.seek_to(current_time, source="playback", request_frame=False, emit=False)
         if hasattr(self, "editor_timeline"):
-            self.editor_timeline.update_playhead()
+            update_label = (now - self._playback_label_last_update_at) >= 0.12
+            if update_label:
+                self._playback_label_last_update_at = now
+            self.editor_timeline.update_playhead(update_label=update_label)
 
-        self._update_split_button_state()
         if current_time >= self.editor_state.playback.duration and self.editor_state.playback.duration > 0:
+            if hasattr(self, "video_preview"):
+                self.video_preview.pause()
             return
         self._schedule_playback_tick()
 
@@ -1159,7 +1303,7 @@ class VideoCompressorGUI:
         self._update_split_button_state()
 
     def _start_timeline_blur_selection(self):
-        if self.is_compressing:
+        if self.is_compressing or self._editing_locked_by_playback():
             return
 
         if not self.input_file:
@@ -1367,6 +1511,9 @@ class VideoCompressorGUI:
 
     def _select_input_file(self):
         """Abre diálogo para selecionar arquivo de vídeo."""
+        if self.is_compressing or self._editing_locked_by_playback():
+            return
+
         video_formats = (
             ("Arquivos de Vídeo (*.mp4 *.mov *.mkv *.avi *.wmv *.flv *.webm *.m4v *.mpeg *.mpg *.3gp *.ts *.mts *.m2ts)",
              "*.mp4 *.mov *.mkv *.avi *.wmv *.flv *.webm *.m4v *.mpeg *.mpg *.3gp *.ts *.mts *.m2ts"),
@@ -1385,7 +1532,7 @@ class VideoCompressorGUI:
 
     def _add_input_files_dialog(self):
         """Adiciona um ou mais vídeos à timeline existente."""
-        if self.is_compressing:
+        if self.is_compressing or self._editing_locked_by_playback():
             return
 
         video_formats = (
@@ -1523,13 +1670,18 @@ class VideoCompressorGUI:
             parent_folder = str(Path(segment.source_path).parent)
             self.label_file_name.configure(text=self._shorten_text(file_name, 46))
             self.label_input_path.configure(text=self._shorten_path(parent_folder, 62))
-            self.label_resolution.configure(text=f"{segment.metadata.get('width', 0)}x{segment.metadata.get('height', 0)}")
+            self.label_resolution.configure(
+                text=self._format_metadata_resolution(
+                    segment.metadata.get("width", 0),
+                    segment.metadata.get("height", 0),
+                )
+            )
             self.label_codec.configure(text=segment.metadata.get("codec", "--"))
         else:
             self.label_file_name.configure(text=f"{len(segments)} vídeos na linha do tempo")
             self.label_input_path.configure(text=f"Primeiro: {self._shorten_text(Path(segments[0].source_path).name, 48)}")
             if len(widths) == 1 and len(heights) == 1:
-                self.label_resolution.configure(text=f"{widths.pop()}x{heights.pop()}")
+                self.label_resolution.configure(text=self._format_metadata_resolution(widths.pop(), heights.pop()))
             else:
                 self.label_resolution.configure(text="Vários")
             self.label_codec.configure(text=codecs.pop() if len(codecs) == 1 else "Vários")
@@ -1537,7 +1689,8 @@ class VideoCompressorGUI:
         self.btn_select_input.configure(text="Trocar vídeo")
         self.drop_zone.configure(fg_color="#F3F9FF", border_color=self.ACCENT_COLOR)
         self.label_file_size.configure(text=f"{self._format_decimal(total_mb, 2)} MB")
-        self.label_duration.configure(text=str(timedelta(seconds=int(total_duration))))
+        self.label_duration.configure(text=self._format_metadata_duration(total_duration))
+        self._refresh_metadata_layout()
 
     def _update_input_info(self):
         """Atualiza as informações do arquivo selecionado."""
@@ -1559,14 +1712,15 @@ class VideoCompressorGUI:
             size_mb = info['file_size'] / (1024 * 1024)
             self.label_file_size.configure(text=f"{self._format_decimal(size_mb, 2)} MB")
 
-            duration_str = str(timedelta(seconds=int(duration)))
+            duration_str = self._format_metadata_duration(duration)
             self.label_duration.configure(text=duration_str)
 
-            resolution_str = f"{info['width']}x{info['height']}"
+            resolution_str = self._format_metadata_resolution(info["width"], info["height"])
             self.label_resolution.configure(text=resolution_str)
 
             codec = self._get_video_codec(self.input_file)
             self.label_codec.configure(text=codec)
+            self._refresh_metadata_layout()
             self.video_preview.load(
                 self.input_file,
                 duration,
@@ -1649,6 +1803,9 @@ class VideoCompressorGUI:
 
     def _start_compression(self):
         """Inicia o processo de compressão."""
+        if self._editing_locked_by_playback():
+            return
+
         if not self.input_file:
             messagebox.showwarning("Erro", "Por favor, selecione um arquivo de vídeo.")
             return
@@ -1687,6 +1844,9 @@ class VideoCompressorGUI:
 
     def _start_audio_extraction(self):
         """Inicia a extração do áudio em MP3."""
+        if self._editing_locked_by_playback():
+            return
+
         if not self.input_file:
             messagebox.showwarning("Erro", "Por favor, selecione um arquivo de vídeo.")
             return
@@ -2034,6 +2194,21 @@ class VideoCompressorGUI:
 
     def _format_decimal(self, value: float, digits: int) -> str:
         return f"{value:.{digits}f}".replace(".", ",")
+
+    def _format_metadata_duration(self, seconds: float) -> str:
+        total_seconds = max(0, int(seconds or 0))
+        minutes, secs = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _format_metadata_resolution(self, width: int, height: int) -> str:
+        width = int(width or 0)
+        height = int(height or 0)
+        if width <= 0 or height <= 0:
+            return "--"
+        return f"{width}×{height}"
 
     def _get_reveal_button_text(self) -> str:
         system = platform.system()

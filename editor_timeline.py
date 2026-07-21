@@ -2,12 +2,79 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from typing import Callable, Optional
 
 import customtkinter as ctk
 import tkinter as tk
 
-from editor_state import BlurFilter, EditorState, MIN_FILTER_DURATION, SELECTED_SEGMENT, VideoSegment
+from editor_state import EditorState, SELECTED_SEGMENT, VideoSegment
+
+
+class WidgetTooltip:
+    """Tooltip simples para botoes do editor, sem dependencia externa."""
+
+    def __init__(self, widget, text: str = "", delay_ms: int = 450):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after_id = None
+        self._window = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def set_text(self, text: str):
+        self.text = text
+
+    def _schedule(self, _event=None):
+        self._hide()
+        if not self.text:
+            return
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _show(self):
+        self._after_id = None
+        if not self.text:
+            return
+        try:
+            x = self.widget.winfo_rootx()
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+            self._window = tk.Toplevel(self.widget)
+            self._window.overrideredirect(True)
+            self._window.configure(bg="#111827")
+            try:
+                self._window.attributes("-topmost", True)
+            except Exception:
+                pass
+            label = tk.Label(
+                self._window,
+                text=self.text,
+                bg="#111827",
+                fg="#FFFFFF",
+                padx=9,
+                pady=6,
+                font=("Arial", 10),
+            )
+            label.pack()
+            self._window.geometry(f"+{x}+{y}")
+        except Exception:
+            self._window = None
+
+    def _hide(self, _event=None):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        if self._window is not None:
+            try:
+                self._window.destroy()
+            except Exception:
+                pass
+            self._window = None
 
 
 class EditorTimeline:
@@ -17,6 +84,17 @@ class EditorTimeline:
     TRACK_HEIGHT = 26
     TRACK_GAP = 10
     VIDEO_TOP = 52
+    SEGMENT_PALETTE = (
+        "#2F80ED",
+        "#6D5DFB",
+        "#0F9F8F",
+        "#B7791F",
+        "#B83280",
+        "#0E7490",
+        "#4F46E5",
+        "#C2410C",
+    )
+    SEGMENT_VARIANTS = (-0.10, 0.04, 0.15, -0.18, 0.10)
 
     def __init__(
         self,
@@ -28,8 +106,6 @@ class EditorTimeline:
         on_seek: Callable[[float, str], None],
         on_filter_select: Callable[[str], None],
         on_filter_changed: Callable[[str], None],
-        on_filter_delete: Callable[[str], None],
-        on_filter_duplicate: Callable[[str], None],
         on_segment_select: Callable[[str], None],
         on_segment_delete: Callable[[str], None],
         on_segment_duplicate: Callable[[str], None],
@@ -42,8 +118,6 @@ class EditorTimeline:
         self.on_seek = on_seek
         self.on_filter_select = on_filter_select
         self.on_filter_changed = on_filter_changed
-        self.on_filter_delete = on_filter_delete
-        self.on_filter_duplicate = on_filter_duplicate
         self.on_segment_select = on_segment_select
         self.on_segment_delete = on_segment_delete
         self.on_segment_duplicate = on_segment_duplicate
@@ -53,10 +127,15 @@ class EditorTimeline:
         self._block_regions: dict[str, tuple[float, float, float, float]] = {}
         self._segment_regions: dict[str, tuple[float, float, float, float]] = {}
         self._active_ids: set[str] = set()
+        self._active_segment_id: Optional[str] = None
+        self._hover_segment_id: Optional[str] = None
         self._snap_feedback_time: Optional[float] = None
         self._drag_feedback: Optional[tuple[str, float, float]] = None
-        self._updating_inspector = False
         self._enabled = True
+        self._playback_mode = False
+        self._source_palette_indices: dict[str, int] = {}
+        self._segment_tooltip_after_id = None
+        self._segment_tip_window = None
 
         self.frame = ctk.CTkFrame(
             parent,
@@ -66,7 +145,8 @@ class EditorTimeline:
             border_color=colors["border"],
         )
         self.frame.grid_columnconfigure(0, weight=1)
-        self.frame.grid_rowconfigure(1, weight=1)
+        self.frame.grid_rowconfigure(1, weight=0)
+        self.frame.grid_rowconfigure(2, weight=1)
 
         self._build_ui()
         self.refresh()
@@ -107,8 +187,68 @@ class EditorTimeline:
         )
         self.btn_add_blur.grid(row=0, column=2, sticky="e")
 
+        self.context_slot = ctk.CTkFrame(self.frame, fg_color="transparent", height=38)
+        self.context_slot.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        self.context_slot.grid_propagate(False)
+        self.context_slot.grid_columnconfigure(0, weight=1)
+
+        self.context_bar = ctk.CTkFrame(
+            self.context_slot,
+            fg_color="#F8FAFC",
+            corner_radius=10,
+            border_width=1,
+            border_color=self.colors["border"],
+            height=34,
+        )
+        self.context_bar.grid_columnconfigure(0, weight=1)
+
+        self.context_label = ctk.CTkLabel(
+            self.context_bar,
+            text="",
+            font=self.font(11, "bold"),
+            text_color=self.colors["text"],
+            anchor="w",
+        )
+        self.context_label.grid(row=0, column=0, sticky="ew", padx=(11, 10), pady=4)
+
+        self.btn_context_duplicate = ctk.CTkButton(
+            self.context_bar,
+            text="Duplicar",
+            command=self._duplicate_selected,
+            font=self.font(11, "bold"),
+            height=26,
+            width=78,
+            corner_radius=8,
+            fg_color="#FFFFFF",
+            hover_color="#F2F6FB",
+            text_color=self.colors["text"],
+            text_color_disabled=self.colors["muted"],
+            border_width=1,
+            border_color=self.colors["strong_border"],
+        )
+        self.btn_context_duplicate.grid(row=0, column=1, sticky="e", padx=(0, 6), pady=4)
+
+        self.btn_context_delete = ctk.CTkButton(
+            self.context_bar,
+            text="Excluir",
+            command=self._delete_selected,
+            font=self.font(11, "bold"),
+            height=26,
+            width=66,
+            corner_radius=8,
+            fg_color="#FFFFFF",
+            hover_color="#FFF2F1",
+            text_color="#FF3B30",
+            text_color_disabled=self.colors["muted"],
+            border_width=1,
+            border_color="#FFD2CE",
+        )
+        self.btn_context_delete.grid(row=0, column=2, sticky="e", padx=(0, 7), pady=4)
+        self.duplicate_tooltip = WidgetTooltip(self.btn_context_duplicate, "Duplicar item selecionado.")
+        self.delete_tooltip = WidgetTooltip(self.btn_context_delete, "Excluir item selecionado.")
+
         canvas_wrap = ctk.CTkFrame(self.frame, fg_color="#F8FAFC", corner_radius=12)
-        canvas_wrap.grid(row=1, column=0, sticky="nsew", padx=14)
+        canvas_wrap.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 14))
         canvas_wrap.grid_columnconfigure(0, weight=1)
         canvas_wrap.grid_rowconfigure(0, weight=1)
 
@@ -123,136 +263,54 @@ class EditorTimeline:
         self.v_scrollbar = ctk.CTkScrollbar(canvas_wrap, orientation="vertical", command=self.canvas.yview)
         self.v_scrollbar.grid(row=0, column=1, sticky="ns")
         self.canvas.configure(yscrollcommand=self.v_scrollbar.set)
-        self.canvas.bind("<Configure>", lambda _event: self.refresh(redraw_inspector=False))
+        self.canvas.bind("<Configure>", lambda _event: self.refresh(redraw_context=False))
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.canvas.bind("<Motion>", self._on_motion)
-        self.canvas.bind("<Leave>", lambda _event: self.canvas.configure(cursor=""))
-
-        self.inspector = ctk.CTkFrame(self.frame, fg_color="transparent")
-        self.inspector.grid(row=2, column=0, sticky="ew", padx=14, pady=(9, 13))
-        for column in range(6):
-            self.inspector.grid_columnconfigure(column, weight=1 if column in (1, 3) else 0)
-
-        self.inspector_title = ctk.CTkLabel(
-            self.inspector,
-            text="Nenhum filtro selecionado",
-            font=self.font(12, "bold"),
-            text_color=self.colors["text"],
-            anchor="w",
-        )
-        self.inspector_title.grid(row=0, column=0, columnspan=6, sticky="ew")
-
-        self.start_entry = ctk.CTkEntry(
-            self.inspector,
-            height=30,
-            width=78,
-            font=self.font(11),
-            corner_radius=9,
-            border_color=self.colors["strong_border"],
-        )
-        self.end_entry = ctk.CTkEntry(
-            self.inspector,
-            height=30,
-            width=78,
-            font=self.font(11),
-            corner_radius=9,
-            border_color=self.colors["strong_border"],
-        )
-        self.start_caption = ctk.CTkLabel(
-            self.inspector,
-            text="Início",
-            font=self.font(10, "bold"),
-            text_color=self.colors["muted"],
-            anchor="w",
-        )
-        self.end_caption = ctk.CTkLabel(
-            self.inspector,
-            text="Fim",
-            font=self.font(10, "bold"),
-            text_color=self.colors["muted"],
-            anchor="w",
-        )
-        self.region_label = ctk.CTkLabel(
-            self.inspector,
-            text="Região: --",
-            font=self.font(10),
-            text_color=self.colors["muted"],
-            anchor="w",
-        )
-        self.motion_label = ctk.CTkLabel(
-            self.inspector,
-            text="Movimento: Fixo",
-            font=self.font(10),
-            text_color=self.colors["muted"],
-            anchor="w",
-        )
-        self.btn_duplicate = ctk.CTkButton(
-            self.inspector,
-            text="Duplicar",
-            command=self._duplicate_selected,
-            font=self.font(11, "bold"),
-            height=30,
-            width=74,
-            corner_radius=9,
-            fg_color="#FFFFFF",
-            hover_color="#F2F6FB",
-            text_color=self.colors["text"],
-            border_width=1,
-            border_color=self.colors["strong_border"],
-        )
-        self.btn_delete = ctk.CTkButton(
-            self.inspector,
-            text="Excluir",
-            command=self._delete_selected,
-            font=self.font(11, "bold"),
-            height=30,
-            width=66,
-            corner_radius=9,
-            fg_color="#FFFFFF",
-            hover_color="#FFF2F1",
-            text_color="#FF3B30",
-            border_width=1,
-            border_color="#FFD2CE",
-        )
-
-        for widget in (self.start_entry, self.end_entry):
-            widget.bind("<Return>", self._commit_entry_times)
-            widget.bind("<FocusOut>", self._commit_entry_times)
-
-        self._grid_inspector_fields(False)
+        self.canvas.bind("<Leave>", self._on_leave)
+        self.context_bar.grid_remove()
 
     def grid(self, **kwargs):
         self.frame.grid(**kwargs)
 
-    def refresh(self, redraw_inspector: bool = True):
+    def refresh(self, redraw_context: bool = True):
         self._draw_timeline()
-        if redraw_inspector:
-            self._draw_inspector()
+        if redraw_context:
+            self._update_context_bar()
 
-    def update_playhead(self):
+    def update_playhead(self, update_label: bool = True):
         active_ids = {
             item.id for item in self.editor_state.filters
             if item.contains(self.editor_state.playback.current_time)
         }
-        if active_ids != self._active_ids:
+        active_segment_id = self._segment_id_at_time(self.editor_state.playback.current_time)
+        if active_ids != self._active_ids or active_segment_id != self._active_segment_id:
             self._draw_timeline()
         else:
             self.canvas.delete("playhead")
             self._draw_playhead()
-        self._update_time_label()
+        if update_label:
+            self._update_time_label()
 
     def set_enabled(self, enabled: bool):
         self._enabled = enabled
         state = "normal" if enabled else "disabled"
         self.btn_add_blur.configure(state=state)
-        self.start_entry.configure(state=state)
-        self.end_entry.configure(state=state)
-        self.btn_duplicate.configure(state=state)
-        self.btn_delete.configure(state=state)
-        self.refresh(redraw_inspector=True)
+        self._update_context_bar()
+        self.refresh(redraw_context=False)
+
+    def set_playback_mode(self, enabled: bool):
+        self._playback_mode = bool(enabled)
+        state = "disabled" if enabled or not self._enabled else "normal"
+        self.btn_add_blur.configure(state=state)
+        self._drag = None
+        self._snap_feedback_time = None
+        self._drag_feedback = None
+        self._hide_segment_tooltip()
+        self._update_context_bar()
+        self.refresh(redraw_context=False)
 
     def _draw_timeline(self):
         self.canvas.delete("all")
@@ -262,6 +320,7 @@ class EditorTimeline:
             item.id for item in self.editor_state.filters
             if item.contains(self.editor_state.playback.current_time)
         }
+        self._active_segment_id = self._segment_id_at_time(self.editor_state.playback.current_time)
 
         width = max(320, self.canvas.winfo_width())
         height = max(160, self.canvas.winfo_height())
@@ -272,6 +331,7 @@ class EditorTimeline:
         self._draw_video_track(width)
         self._draw_filter_tracks(width)
         self._draw_playhead()
+        self._draw_playback_notice(width)
         self._draw_snap_feedback(width)
         self._draw_drag_feedback()
         self.canvas.configure(scrollregion=(0, 0, width, content_height))
@@ -344,25 +404,51 @@ class EditorTimeline:
                 self.editor_state.playback.selected_item_type == SELECTED_SEGMENT
                 and self.editor_state.playback.selected_item_id == segment.id
             )
-            fill = "#EAF4FF" if selected else "#F3F9FF"
-            outline = self.colors["accent"] if selected else "#B8D7FF"
+            active = segment.id == self._active_segment_id
+            hovered = segment.id == self._hover_segment_id and not self._playback_mode
+            style = self._segment_visual_style(segment, selected=selected, active=active, hovered=hovered)
+            if block_left > left + 1:
+                self.canvas.create_line(
+                    block_left,
+                    top + 4,
+                    block_left,
+                    bottom - 4,
+                    fill="#FFFFFF",
+                    width=2,
+                )
             self.canvas.create_rectangle(
                 block_left,
                 top + 3,
                 block_right,
                 bottom - 3,
-                fill=fill,
-                outline=outline,
+                fill=style["fill"],
+                outline=style["outline"],
                 width=2 if selected else 1,
                 tags=(f"segment_{segment.id}", "segment_block"),
             )
-            self.canvas.create_line(block_left, top + 6, block_left, bottom - 6, fill=outline, width=1)
-            self.canvas.create_line(block_right, top + 6, block_right, bottom - 6, fill=outline, width=1)
+            if active:
+                self.canvas.create_rectangle(
+                    block_left + 2,
+                    top + 4,
+                    block_right - 2,
+                    top + 7,
+                    fill=style["indicator"],
+                    outline="",
+                    tags=(f"segment_{segment.id}", "segment_block"),
+                )
+            self.canvas.create_line(block_left, top + 6, block_left, bottom - 6, fill=style["cut"], width=1)
+            self.canvas.create_line(block_right, top + 6, block_right, bottom - 6, fill=style["cut"], width=1)
+            label = f"S{index}"
+            block_width = block_right - block_left
+            if block_width >= 96:
+                label = f"{label} · {self._short_source_name(segment, limit=12)}"
+            elif block_width < 30:
+                label = f"S{index}"
             self.canvas.create_text(
                 (block_left + block_right) / 2,
                 (top + bottom) / 2,
-                text=f"S{index}",
-                fill=self.colors["accent"] if selected else self.colors["muted"],
+                text=label,
+                fill=style["text"],
                 font=self._tk_font(9, "bold"),
                 anchor="center",
             )
@@ -376,7 +462,7 @@ class EditorTimeline:
             self.canvas.create_text(
                 left,
                 top + 18,
-                text="Clique em + Blur e desenhe uma área na prévia.",
+                text="Clique em Adicionar blur e desenhe uma área na prévia.",
                 fill=self.colors["muted"],
                 font=self._tk_font(10),
                 anchor="w",
@@ -433,6 +519,34 @@ class EditorTimeline:
         self.canvas.create_line(x, self.RULER_HEIGHT - 14, x, height - 10, fill="#FF3B30", width=2, tags=("playhead",))
         self.canvas.create_oval(x - 4, self.RULER_HEIGHT - 18, x + 4, self.RULER_HEIGHT - 10, fill="#FF3B30", outline="", tags=("playhead",))
 
+    def _draw_playback_notice(self, width: int):
+        if not self._playback_mode:
+            return
+
+        text = "Prévia em reprodução — pause para editar"
+        text_width = min(236, max(180, len(text) * 5 + 24))
+        x = max(self.LABEL_WIDTH + 8, width - self.RIGHT_PAD - text_width)
+        y = 7
+        self.canvas.create_rectangle(
+            x,
+            y,
+            x + text_width,
+            y + 22,
+            fill="#FFFFFF",
+            outline="#D5DDEC",
+            width=1,
+            tags=("playback_notice",),
+        )
+        self.canvas.create_text(
+            x + 10,
+            y + 11,
+            text=text,
+            fill=self.colors["muted"],
+            font=self._tk_font(9, "bold"),
+            anchor="w",
+            tags=("playback_notice",),
+        )
+
     def _draw_snap_feedback(self, width: int):
         if self._snap_feedback_time is None:
             return
@@ -474,79 +588,39 @@ class EditorTimeline:
             tags=("drag_feedback",),
         )
 
-    def _draw_inspector(self):
+    def _update_context_bar(self):
         selected_segment = self.editor_state.selected_segment()
+        can_edit = self._enabled and not self._playback_mode
+
         if selected_segment is not None:
-            self._draw_segment_inspector(selected_segment)
+            try:
+                index = self.editor_state.segments.index(selected_segment) + 1
+            except ValueError:
+                index = int(selected_segment.metadata.get("index", 0) or 0)
+
+            can_delete = can_edit and len(self.editor_state.segments) > 1
+            self.context_label.configure(text=f"S{index} selecionado")
+            self.btn_context_duplicate.configure(state="normal" if can_edit else "disabled")
+            self.btn_context_delete.configure(
+                state="normal" if can_delete else "disabled",
+                border_color="#FFD2CE" if can_delete else self.colors["border"],
+            )
+            self.duplicate_tooltip.set_text(
+                "Duplicar segmento selecionado."
+                if can_edit else "Pause a prévia para editar."
+            )
+            if len(self.editor_state.segments) <= 1:
+                self.delete_tooltip.set_text("Não é possível excluir o único clipe da timeline.")
+            elif not can_edit:
+                self.delete_tooltip.set_text("Pause a prévia para editar.")
+            else:
+                self.delete_tooltip.set_text("Excluir segmento selecionado.")
+            self.context_bar.grid(row=0, column=0, sticky="ew")
             return
 
-        selected = self.editor_state.selected_filter()
-        if not isinstance(selected, BlurFilter):
-            self.inspector_title.configure(text="Nenhum item selecionado")
-            self._grid_inspector_fields(False)
-            return
-
-        self._grid_inspector_fields(True, item_type="filter")
-        self._updating_inspector = True
-        self.inspector_title.configure(text=selected.name)
-        rect = selected.region.clamped()
-        self.region_label.configure(text=f"Região: {int(rect.width * 100)}x{int(rect.height * 100)}%")
-        self.motion_label.configure(text="Movimento: Fixo · ajuste a duração pela barra")
-        self.btn_duplicate.configure(text="Duplicar")
-        self.btn_delete.configure(text="Excluir", width=66)
-        self._updating_inspector = False
-
-    def _draw_segment_inspector(self, segment: VideoSegment):
-        self._grid_inspector_fields(True, item_type="segment")
-        self._updating_inspector = True
-        name = segment.metadata.get("name") or f"Segmento {self.editor_state.segments.index(segment) + 1}"
-        source_name = segment.source_path.replace("\\", "/").rsplit("/", 1)[-1] if segment.source_path else "--"
-        self.inspector_title.configure(text=name)
-        self.start_entry.configure(state="normal")
-        self.end_entry.configure(state="normal")
-        self._replace_entry_value(self.start_entry, self._format_time_precise(segment.timeline_start))
-        self._replace_entry_value(self.end_entry, self._format_time_precise(segment.timeline_end))
-        self.start_entry.configure(state="disabled")
-        self.end_entry.configure(state="disabled")
-        self.region_label.configure(text=f"Origem: {source_name}")
-        self.motion_label.configure(
-            text=f"Fonte: {self._format_time_precise(segment.source_start)}-{self._format_time_precise(segment.source_end)}"
-        )
-        self.btn_duplicate.configure(text="Duplicar", width=74)
-        self.btn_delete.configure(text="Excluir e fechar", width=126)
-        self._updating_inspector = False
-
-    def _grid_inspector_fields(self, visible: bool, item_type: str = "filter"):
-        widgets = (
-            self.start_caption,
-            self.end_caption,
-            self.start_entry,
-            self.end_entry,
-            self.region_label,
-            self.motion_label,
-            self.btn_duplicate,
-            self.btn_delete,
-        )
-        for widget in widgets:
-            widget.grid_forget()
-
-        if not visible:
-            return
-
-        if item_type == "segment":
-            self.start_caption.grid(row=1, column=0, sticky="w", pady=(7, 0), padx=(0, 5))
-            self.start_entry.grid(row=1, column=1, sticky="w", pady=(7, 0), padx=(0, 10))
-            self.end_caption.grid(row=1, column=2, sticky="w", pady=(7, 0), padx=(0, 5))
-            self.end_entry.grid(row=1, column=3, sticky="w", pady=(7, 0), padx=(0, 10))
-            self.btn_duplicate.grid(row=1, column=4, sticky="e", pady=(7, 0), padx=(0, 7))
-            self.btn_delete.grid(row=1, column=5, sticky="e", pady=(7, 0))
-        else:
-            self.btn_duplicate.grid(row=1, column=4, sticky="e", pady=(7, 0), padx=(0, 7))
-            self.btn_delete.grid(row=1, column=5, sticky="e", pady=(7, 0))
-
-        row = 2 if item_type == "segment" else 1
-        self.region_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 0), padx=(0, 10))
-        self.motion_label.grid(row=row, column=3, columnspan=3, sticky="ew", pady=(8, 0))
+        self.context_bar.grid_remove()
+        self.duplicate_tooltip.set_text("")
+        self.delete_tooltip.set_text("")
 
     def _on_press(self, event):
         if not self._enabled:
@@ -556,6 +630,13 @@ class EditorTimeline:
         y = self.canvas.canvasy(event.y)
         duration = self.editor_state.playback.duration
         if duration <= 0:
+            return
+
+        if self._playback_mode:
+            if y <= self.VIDEO_TOP + self.TRACK_HEIGHT:
+                target = self._x_to_time(x)
+                self._drag = {"mode": "playhead", "shift": True}
+                self.on_seek(target, "timeline")
             return
 
         hit_id, mode = self._hit_filter_block(x, y)
@@ -614,7 +695,11 @@ class EditorTimeline:
         mode = self._drag["mode"]
         shift = bool(event.state & 0x0001) or self._drag.get("shift", False)
         if mode == "playhead":
-            self.on_seek(self._snap_time(self._x_to_time(x), shift=shift), "timeline")
+            target = self._x_to_time(x) if self._playback_mode else self._snap_time(self._x_to_time(x), shift=shift)
+            self.on_seek(target, "timeline")
+            return
+
+        if self._playback_mode:
             return
 
         if mode == "segment":
@@ -623,7 +708,7 @@ class EditorTimeline:
             self._drag["target_index"] = target_index
             self._snap_feedback_time = self._segment_insertion_time(self._drag["segment_id"], target_index)
             self._drag_feedback = ("Solte para inserir aqui", self._time_to_x(self._snap_feedback_time), self.VIDEO_TOP - 4)
-            self.refresh(redraw_inspector=False)
+            self.refresh(redraw_context=False)
             return
 
         filter_id = self._drag["filter_id"]
@@ -662,12 +747,19 @@ class EditorTimeline:
     def _on_release(self, _event):
         if not self._enabled:
             return
+        if self._playback_mode:
+            self._drag = None
+            self._snap_feedback_time = None
+            self._drag_feedback = None
+            self.canvas.delete("snap_feedback")
+            self.canvas.delete("drag_feedback")
+            return
         if self._drag and self._drag.get("mode") == "segment" and self._drag.get("moved"):
             self.on_segment_move(self._drag["segment_id"], self._drag.get("target_index", 0))
         self._drag = None
         self._snap_feedback_time = None
         self._drag_feedback = None
-        self.refresh(redraw_inspector=True)
+        self.refresh(redraw_context=True)
 
     def _on_mouse_wheel(self, event):
         direction = -1 if event.delta > 0 else 1
@@ -689,6 +781,180 @@ class EditorTimeline:
                 return segment_id
         return None
 
+    def _set_hover_segment(self, segment_id: Optional[str], event=None):
+        if self._hover_segment_id == segment_id:
+            if segment_id is not None and event is not None:
+                self._schedule_segment_tooltip(segment_id, event)
+            return
+
+        self._hover_segment_id = segment_id
+        self._hide_segment_tooltip()
+        if segment_id is not None and event is not None:
+            self._schedule_segment_tooltip(segment_id, event)
+        self.refresh(redraw_context=False)
+
+    def _schedule_segment_tooltip(self, segment_id: str, event):
+        if self._segment_tip_window is not None:
+            return
+        if self._segment_tooltip_after_id is not None:
+            return
+
+        root_x = self.canvas.winfo_rootx() + int(event.x) + 12
+        root_y = self.canvas.winfo_rooty() + int(event.y) + 14
+        self._segment_tooltip_after_id = self.canvas.after(
+            450,
+            lambda sid=segment_id, x=root_x, y=root_y: self._show_segment_tooltip(sid, x, y)
+        )
+
+    def _show_segment_tooltip(self, segment_id: str, root_x: int, root_y: int):
+        self._segment_tooltip_after_id = None
+        segment = self.editor_state.get_segment(segment_id)
+        if segment is None or self._hover_segment_id != segment_id:
+            return
+
+        self._hide_segment_tooltip()
+        window = tk.Toplevel(self.canvas)
+        window.overrideredirect(True)
+        window.configure(bg="#111827")
+        try:
+            window.attributes("-topmost", True)
+        except Exception:
+            pass
+        label = tk.Label(
+            window,
+            text=self._segment_tooltip_text(segment),
+            justify="left",
+            bg="#111827",
+            fg="#FFFFFF",
+            padx=10,
+            pady=8,
+            font=self._tk_font(10),
+        )
+        label.pack()
+        window.geometry(f"+{root_x}+{root_y}")
+        self._segment_tip_window = window
+
+    def _hide_segment_tooltip(self):
+        if self._segment_tooltip_after_id is not None:
+            try:
+                self.canvas.after_cancel(self._segment_tooltip_after_id)
+            except Exception:
+                pass
+            self._segment_tooltip_after_id = None
+        if self._segment_tip_window is not None:
+            try:
+                self._segment_tip_window.destroy()
+            except Exception:
+                pass
+            self._segment_tip_window = None
+
+    def _segment_tooltip_text(self, segment: VideoSegment) -> str:
+        try:
+            index = self.editor_state.segments.index(segment) + 1
+        except ValueError:
+            index = int(segment.metadata.get("index", 0) or 0)
+        source_name = self._short_source_name(segment, limit=42)
+        return (
+            f"{source_name}\n"
+            f"Segmento S{index}\n"
+            f"Origem: {self._format_time_precise(segment.source_start)}-{self._format_time_precise(segment.source_end)}\n"
+            f"Timeline: {self._format_time_precise(segment.timeline_start)}-{self._format_time_precise(segment.timeline_end)}\n"
+            f"Duração: {self._format_time_precise(segment.duration)}"
+        )
+
+    def _segment_id_at_time(self, timestamp: float) -> Optional[str]:
+        for segment in self.editor_state.segments:
+            if segment.contains(timestamp, include_end=True):
+                return segment.id
+        return None
+
+    def _segment_visual_style(
+        self,
+        segment: VideoSegment,
+        selected: bool = False,
+        active: bool = False,
+        hovered: bool = False,
+    ) -> dict[str, str]:
+        base = self._segment_base_color(segment.source_path)
+        seed = f"{segment.source_path}|{segment.source_start:.3f}|{segment.source_end:.3f}|{segment.id}"
+        variant = self.SEGMENT_VARIANTS[self._stable_index(seed, len(self.SEGMENT_VARIANTS))]
+        fill = self._adjust_color(base, variant)
+        if hovered:
+            fill = self._mix_color(fill, "#FFFFFF", 0.12)
+        if not segment.enabled:
+            fill = self._mix_color(fill, "#FFFFFF", 0.52)
+
+        outline = self._adjust_color(base, -0.26)
+        if selected:
+            outline = self.colors["accent"]
+        elif active:
+            outline = self._adjust_color(base, -0.34)
+        elif hovered:
+            outline = self._adjust_color(base, -0.18)
+
+        return {
+            "fill": fill,
+            "outline": outline,
+            "text": self._contrast_text(fill),
+            "cut": self._mix_color(outline, "#FFFFFF", 0.38),
+            "indicator": "#FFFFFF" if self._contrast_text(fill) == "#FFFFFF" else self.colors["accent"],
+        }
+
+    def _segment_base_color(self, source_path: str) -> str:
+        key = source_path or "timeline"
+        if not hasattr(self, "_source_palette_indices"):
+            self._source_palette_indices = {}
+        if key not in self._source_palette_indices:
+            preferred = self._stable_index(key, len(self.SEGMENT_PALETTE))
+            used = set(self._source_palette_indices.values())
+            chosen = preferred
+            for offset in range(len(self.SEGMENT_PALETTE)):
+                candidate = (preferred + offset) % len(self.SEGMENT_PALETTE)
+                if candidate not in used:
+                    chosen = candidate
+                    break
+            self._source_palette_indices[key] = chosen
+        return self.SEGMENT_PALETTE[self._source_palette_indices[key]]
+
+    def _stable_index(self, value: str, size: int) -> int:
+        digest = hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()
+        return int(digest[:8], 16) % max(1, size)
+
+    def _adjust_color(self, color: str, amount: float) -> str:
+        target = "#FFFFFF" if amount >= 0 else "#111827"
+        return self._mix_color(color, target, abs(amount))
+
+    def _mix_color(self, color: str, target: str, amount: float) -> str:
+        amount = max(0.0, min(1.0, float(amount)))
+        r1, g1, b1 = self._hex_to_rgb(color)
+        r2, g2, b2 = self._hex_to_rgb(target)
+        return "#{:02X}{:02X}{:02X}".format(
+            int(round(r1 + (r2 - r1) * amount)),
+            int(round(g1 + (g2 - g1) * amount)),
+            int(round(b1 + (b2 - b1) * amount)),
+        )
+
+    def _hex_to_rgb(self, color: str) -> tuple[int, int, int]:
+        value = color.strip().lstrip("#")
+        if len(value) == 3:
+            value = "".join(char * 2 for char in value)
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+    def _contrast_text(self, color: str) -> str:
+        red, green, blue = self._hex_to_rgb(color)
+        luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255
+        return "#111827" if luminance > 0.58 else "#FFFFFF"
+
+    def _short_source_name(self, segment: VideoSegment, limit: int = 16) -> str:
+        name = segment.metadata.get("name")
+        if not name:
+            name = os.path.basename(segment.source_path or "") or "Vídeo"
+        if len(name) <= limit:
+            return name
+        if limit <= 4:
+            return name[:limit]
+        return f"{name[:max(1, limit - 3)]}..."
+
     def _segment_target_index_for_x(self, segment_id: str, x: float) -> int:
         target_time = self._x_to_time(x)
         others = [item for item in self.editor_state.segments if item.id != segment_id]
@@ -709,10 +975,19 @@ class EditorTimeline:
     def _on_motion(self, event):
         if not self._enabled:
             self.canvas.configure(cursor="")
+            self._set_hover_segment(None, event)
             return
 
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
+        segment_id = self._hit_segment_block(x, y)
+
+        if self._playback_mode:
+            self._set_hover_segment(None, event)
+            self.canvas.configure(cursor="hand2" if y <= self.VIDEO_TOP + self.TRACK_HEIGHT else "")
+            return
+
+        self._set_hover_segment(segment_id, event)
         _filter_id, mode = self._hit_filter_block(x, y)
         if mode in ("left", "right"):
             self.canvas.configure(cursor="sb_h_double_arrow")
@@ -720,7 +995,7 @@ class EditorTimeline:
         if mode == "move":
             self.canvas.configure(cursor="fleur")
             return
-        if self._hit_segment_block(x, y) is not None:
+        if segment_id is not None:
             self.canvas.configure(cursor="fleur")
             return
         if y <= self.VIDEO_TOP + self.TRACK_HEIGHT:
@@ -728,48 +1003,20 @@ class EditorTimeline:
             return
         self.canvas.configure(cursor="")
 
-    def _commit_entry_times(self, _event=None):
-        selected = self.editor_state.selected_filter()
-        if not isinstance(selected, BlurFilter):
-            return
-
-        start = self._parse_time(self.start_entry.get(), selected.start_time)
-        end = self._parse_time(self.end_entry.get(), selected.end_time)
-        start = max(0.0, min(start, self.editor_state.playback.duration))
-        end = max(0.0, min(end, self.editor_state.playback.duration))
-
-        if end - start < MIN_FILTER_DURATION:
-            end = min(self.editor_state.playback.duration, start + MIN_FILTER_DURATION)
-            if end - start < MIN_FILTER_DURATION:
-                start = max(0.0, end - MIN_FILTER_DURATION)
-
-        self.editor_state.record_history()
-        selected.start_time = start
-        selected.end_time = end
-        self.on_filter_changed(selected.id)
-        self.refresh()
+    def _on_leave(self, _event):
+        self.canvas.configure(cursor="")
+        self._set_hover_segment(None)
+        self._hide_segment_tooltip()
 
     def _duplicate_selected(self):
         selected_segment = self.editor_state.selected_segment()
         if selected_segment is not None:
             self.on_segment_duplicate(selected_segment.id)
-            return
-
-        selected = self.editor_state.selected_filter()
-        if selected is None:
-            return
-        self.on_filter_duplicate(selected.id)
 
     def _delete_selected(self):
         selected_segment = self.editor_state.selected_segment()
         if selected_segment is not None:
             self.on_segment_delete(selected_segment.id)
-            return
-
-        selected = self.editor_state.selected_filter()
-        if selected is None:
-            return
-        self.on_filter_delete(selected.id)
 
     def _timeline_bounds(self, width: int) -> tuple[int, int]:
         return self.LABEL_WIDTH, max(self.LABEL_WIDTH + 1, width - self.RIGHT_PAD)
@@ -857,10 +1104,6 @@ class EditorTimeline:
             text=f"{self._format_time_precise(playback.current_time)} / {self._format_time(playback.duration)}"
         )
 
-    def _replace_entry_value(self, entry, value: str):
-        entry.delete(0, tk.END)
-        entry.insert(0, value)
-
     def _format_time(self, seconds: float) -> str:
         seconds = max(0, int(round(seconds or 0)))
         minutes, secs = divmod(seconds, 60)
@@ -880,22 +1123,6 @@ class EditorTimeline:
 
     def _format_time_span(self, start: float, end: float) -> str:
         return f"{self._format_time_precise(start)}-{self._format_time_precise(end)}"
-
-    def _parse_time(self, text: str, fallback: float) -> float:
-        value = (text or "").strip().replace(",", ".")
-        if not value:
-            return fallback
-        try:
-            parts = value.split(":")
-            if len(parts) == 1:
-                return float(parts[0])
-            if len(parts) == 2:
-                return int(parts[0]) * 60 + float(parts[1])
-            if len(parts) == 3:
-                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-        except Exception:
-            return fallback
-        return fallback
 
     def _tk_font(self, size: int, weight: Optional[str] = None):
         try:

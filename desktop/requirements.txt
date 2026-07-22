@@ -1,1 +1,7 @@
+# Runtime
 customtkinter==5.2.2
+darkdetect==0.8.0
+packaging==26.1
+
+# Empacotamento (build do .app)
+pyinstaller==6.21.0

@@ -12,7 +12,7 @@ Converta, comprima, otimize e compartilhe — tudo com poucos cliques e processa
 
 ![Beta](https://img.shields.io/badge/status-Beta-007AFF?style=for-the-badge)
 ![Open Source](https://img.shields.io/badge/Open%20Source-sim-34C759?style=for-the-badge)
-![Licença](https://img.shields.io/badge/licença-a%20definir-8E8E93?style=for-the-badge)
+![Licença](https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge)
 
 ![Windows](https://img.shields.io/badge/Windows-suportado-2F80ED?style=for-the-badge&logo=windows)
 ![macOS](https://img.shields.io/badge/macOS-suportado-111827?style=for-the-badge&logo=apple)
@@ -26,7 +26,7 @@ Converta, comprima, otimize e compartilhe — tudo com poucos cliques e processa
 
 <br />
 
-[Sobre](#sobre-o-projeto) · [Funcionalidades](#funcionalidades) · [Roadmap](#roadmap) · [Instalação](#instalação) · [Contribuir](#contribuições)
+[**⬇️ Baixar o app (macOS)**](distribuicao/) · [Sobre](#sobre-o-projeto) · [Funcionalidades](#funcionalidades) · [Roadmap](#roadmap) · [Instalação](#instalação) · [Contribuir](#contribuições)
 
 </div>
 
@@ -196,18 +196,22 @@ assets/demo/demo.gif
 
 ## Instalação
 
+> [!TIP]
+> Só quer usar o app, sem mexer em código? Baixe o `.dmg` ou `.zip` prontos em [`distribuicao/`](distribuicao/) — tem passo a passo simples por lá. O restante desta seção é para quem quer rodar/buildar a partir do código-fonte.
+
 ### Desktop
 
 #### Requisitos
 
 - Python 3.11 ou superior recomendado
 - FFmpeg e FFprobe instalados no sistema
-- Dependências Python em `requirements.txt`
+- Dependências Python em `desktop/requirements.txt`
 
 #### macOS
 
 ```bash
 brew install ffmpeg
+cd desktop
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -217,6 +221,7 @@ python3 main.py
 #### Windows
 
 ```powershell
+cd desktop
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -245,42 +250,66 @@ Ubuntu/Debian:
 ```bash
 sudo apt update
 sudo apt install ffmpeg
+cd desktop
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python3 main.py
 ```
 
+### Gerar o `.app` standalone (macOS)
+
+Para quem não quer instalar Python/FFmpeg, existe um build empacotado com [PyInstaller](https://pyinstaller.org/) que gera um `.app` standalone, com FFmpeg e FFprobe já embutidos:
+
+```bash
+cd desktop
+source .venv/bin/activate
+pyinstaller build.spec --noconfirm
+```
+
+O `.app` final fica em `desktop/dist/`.
+
+> [!NOTE]
+> O FFmpeg/FFprobe embutidos são os binários do Homebrew, que originalmente dependem dinamicamente de bibliotecas do próprio Homebrew (`libx264`, `libx265`, `openssl`, etc.). O PyInstaller já resolve isso automaticamente ao gerar o bundle: todas as dependências são copiadas para dentro do `.app` e os caminhos são reescritos para `@rpath` (confirmado via `otool -L` — nenhuma referência a `/usr/local` ou `/opt/homebrew` sobra no bundle final). Isso foi validado rodando o `.app` e testando compressão/preview reais.
+
 ## Estrutura do Projeto
 
 ```text
 .
-├── main.py                  # Ponto de entrada do app Desktop
-├── ui.py                    # Interface Desktop
-├── compressor.py            # Integração com FFmpeg/FFprobe
-├── editor_state.py          # Estado do editor temporal
-├── editor_timeline.py       # Timeline do editor Desktop
-├── video_preview.py         # Prévia de vídeo
-├── video_filters.py         # Construção de filtros de vídeo
-├── blur_state.py            # Estado compartilhado de blur
-├── utils.py                 # Utilitários gerais
-├── requirements.txt         # Dependências Python
-├── mobile_app/              # Projeto mobile em Flutter
-├── ROADMAP_MOBILE.md        # Roadmap mobile
-├── TESTES.md                # Notas de testes
-├── EMPACOTAMENTO.md         # Notas de empacotamento
-├── README.md                # Documentação principal em PT-BR
-└── README_EN.md             # Documentação em inglês
+├── desktop/                  # Aplicativo Desktop (Python)
+│   ├── main.py                   # Ponto de entrada do app
+│   ├── ui.py                     # Interface Desktop
+│   ├── compressor.py             # Integração com FFmpeg/FFprobe
+│   ├── editor_state.py           # Estado do editor temporal
+│   ├── editor_timeline.py        # Timeline do editor
+│   ├── video_preview.py          # Prévia de vídeo
+│   ├── video_filters.py          # Construção de filtros de vídeo
+│   ├── blur_state.py             # Estado compartilhado de blur
+│   ├── utils.py                  # Utilitários gerais
+│   ├── requirements.txt          # Dependências Python
+│   ├── build.spec                # Configuração do PyInstaller (gera o .app)
+│   ├── bin/                      # FFmpeg/FFprobe embutidos no build (GPL)
+│   └── assets/                   # Ícone e assets do app empacotado
+├── mobile_app/                # Aplicativo Mobile (Flutter)
+├── docs/                      # Documentação técnica, roadmap e relatórios
+│   ├── ROADMAP_MOBILE.md
+│   ├── TESTES.md
+│   ├── EMPACOTAMENTO.md
+│   └── ...
+├── assets/                    # Imagens e material de apoio
+├── distribuicao/              # App pronto pra baixar (.dmg/.zip) + README simples e CHANGELOG
+├── README.md                  # Documentação principal em PT-BR
+└── README_EN.md                # Documentação em inglês
 ```
 
 ## Documentação
 
-- [Roadmap](ROADMAP_MOBILE.md)
+- [Roadmap](docs/ROADMAP_MOBILE.md)
 - [Issues](../../issues)
 - [Releases](../../releases)
 - [Wiki](../../wiki)
-- [Testes](TESTES.md)
-- [Empacotamento](EMPACOTAMENTO.md)
+- [Testes](docs/TESTES.md)
+- [Empacotamento](docs/EMPACOTAMENTO.md)
 
 > [!TIP]
 > Alguns links dependem da publicação do repositório no GitHub.
@@ -321,7 +350,10 @@ CHANGELOG.md
 
 ## Licença
 
-To be defined.
+Este projeto é distribuído sob a **[GNU General Public License v3.0](LICENSE)**.
+
+> [!NOTE]
+> O build empacotado para macOS embute os binários do **FFmpeg**/**FFprobe**, que também são distribuídos sob GPL (build com `--enable-gpl`, incluindo `libx264`). Ao redistribuir o `.app`, o código-fonte deste projeto e os termos da GPL se aplicam ao pacote como um todo — consulte [ffmpeg.org/legal.html](https://ffmpeg.org/legal.html) para detalhes sobre a licença do FFmpeg em si.
 
 ## Agradecimentos
 

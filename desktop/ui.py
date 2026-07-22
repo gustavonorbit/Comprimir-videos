@@ -2069,12 +2069,38 @@ class VideoCompressorGUI:
             return f"Finalizando arquivo{elapsed}"
         return "Processamento concluído"
 
+    def _unique_export_source_paths(self) -> list:
+        """Caminhos únicos de todos os vídeos da timeline usados nesta exportação."""
+        paths = []
+        seen = set()
+        for segment in self.processing_segments:
+            path = getattr(segment, "source_path", None) or self.input_file
+            if path and path not in seen:
+                seen.add(path)
+                paths.append(path)
+        if not paths and self.input_file:
+            paths.append(self.input_file)
+        return paths
+
+    def _sum_file_sizes(self, paths) -> int:
+        total = 0
+        for path in paths:
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                continue
+        return total
+
     def _show_results(self, output_file: str):
         """Mostra os resultados da compressão."""
         try:
-            input_size = os.path.getsize(self.input_file)
+            # Soma os tamanhos reais de TODOS os vídeos da timeline usados nesta
+            # exportação (não apenas o clipe selecionado, nem um valor cacheado
+            # de uma execução anterior).
+            source_paths = self._unique_export_source_paths()
+            input_size = self._sum_file_sizes(source_paths)
             output_size = os.path.getsize(output_file)
-            reduction_percent = ((input_size - output_size) / input_size) * 100
+            reduction_percent = ((input_size - output_size) / input_size) * 100 if input_size > 0 else 0.0
             saved_mb = (input_size - output_size) / (1024 * 1024)
 
             input_mb = input_size / (1024 * 1024)
@@ -2085,9 +2111,10 @@ class VideoCompressorGUI:
             self.last_output_file = output_file
 
             self._add_status("Compressão concluída com sucesso.")
-            self._add_status(f"Tamanho original: {input_mb:.2f} MB.")
+            self._add_status(f"Tamanho original (soma da timeline, {len(source_paths)} vídeo(s)): {input_mb:.2f} MB.")
             self._add_status(f"Tamanho final: {output_mb:.2f} MB.")
             self._add_status(f"Redução: {reduction_percent:.1f}%.")
+            self._add_status(f"Tempo de processamento: {elapsed}.")
             self._add_status(f"Arquivo salvo em: {output_file}.")
 
             self.root.after(
@@ -2166,7 +2193,7 @@ class VideoCompressorGUI:
             self.label_result_savings.configure(text=f"Arquivo gerado · {final_size}")
 
         self.label_result_time.configure(
-            text=f"Tempo: {elapsed} · {self._shorten_text(Path(output_file).name, 34)}"
+            text=f"Processado em {elapsed} · {self._shorten_text(Path(output_file).name, 34)}"
         )
         self.btn_open_file.configure(
             state="normal",

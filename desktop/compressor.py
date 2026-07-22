@@ -6,6 +6,7 @@ Gerencia conversão, redimensionamento e otimização de vídeos.
 import os
 import subprocess
 import json
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,31 @@ from typing import Callable, Optional, Sequence, Tuple
 import re
 
 from video_filters import build_video_filter, rotated_dimensions, rotation_filter
+
+
+def _bundled_binary_candidates(name: str) -> list:
+    """Caminhos onde o binário embutido pode estar quando rodando via PyInstaller
+    (--onedir) ou dentro de um .app, testados antes de qualquer fallback de sistema."""
+    filename = f"{name}.exe" if os.name == 'nt' else name
+    candidates = []
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "bin", filename))
+
+    executable_dir = os.path.dirname(os.path.abspath(sys.executable))
+    candidates.append(os.path.join(executable_dir, "bin", filename))
+
+    if getattr(sys, "frozen", False):
+        # .app/Contents/MacOS/AppName -> .app/Contents/Resources/bin
+        contents_dir = os.path.dirname(executable_dir)
+        candidates.append(os.path.join(contents_dir, "Resources", "bin", filename))
+
+    if not getattr(sys, "frozen", False):
+        # Rodando como script: usa o binário versionado em desktop/bin, se existir.
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", filename))
+
+    return candidates
 
 
 class VideoCompressor:
@@ -51,12 +77,17 @@ class VideoCompressor:
     
     @staticmethod
     def _find_ffmpeg() -> str:
-        """Localiza o executável do FFmpeg."""
+        """Localiza o executável do FFmpeg. Prioriza o binário embutido no bundle
+        (PyInstaller/.app) e só cai para o FFmpeg do sistema como fallback."""
+        for candidate in _bundled_binary_candidates('ffmpeg'):
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+
         if os.name == 'nt':  # Windows
             names = ['ffmpeg.exe', 'ffmpeg']
         else:  # Linux, macOS
             names = ['ffmpeg']
-        
+
         for name in names:
             result = subprocess.run(
                 ['which', name] if os.name != 'nt' else ['where', name],
@@ -83,12 +114,17 @@ class VideoCompressor:
     
     @staticmethod
     def _find_ffprobe() -> str:
-        """Localiza o executável do FFprobe."""
+        """Localiza o executável do FFprobe. Prioriza o binário embutido no bundle
+        (PyInstaller/.app) e só cai para o FFprobe do sistema como fallback."""
+        for candidate in _bundled_binary_candidates('ffprobe'):
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+
         if os.name == 'nt':  # Windows
             names = ['ffprobe.exe', 'ffprobe']
         else:  # Linux, macOS
             names = ['ffprobe']
-        
+
         for name in names:
             result = subprocess.run(
                 ['which', name] if os.name != 'nt' else ['where', name],

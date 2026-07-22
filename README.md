@@ -1,260 +1,339 @@
-# 🎬 Compressor de Vídeos
+<div align="center">
 
-Um programa desktop simples, rápido e profissional para compressão de vídeos com interface gráfica amigável. Foca em máxima compatibilidade, alta redução de tamanho e preservação razoável da qualidade visual.
+# Project Codename
 
-## ✨ Características
+**🇧🇷 Português (Brasil)** · [🇺🇸 English](README_EN.md)
 
-- **Interface moderna**: Construída com CustomTkinter para visual profissional
-- **Compressão eficiente**: H.264 + AAC com CRF ajustável
-- **Múltiplos formatos de entrada**: Aceita praticamente qualquer vídeo suportado pelo FFmpeg
-- **Saída universal em MP4**: Máxima compatibilidade
-- **4 perfis de compressão**: Da alta qualidade à máxima compressão
-- **Controle de resolução**: Original, 1080p, 720p ou 480p
-- **Rotação manual**: Vire vídeos em 90° para direita, 90° para esquerda ou 180°
-- **Opção de remover áudio**: Para compressão ainda maior
-- **Extração de áudio em MP3**: Gera um arquivo `.mp3` a partir do vídeo importado
-- **Processamento não bloqueante**: Interface responsiva com barra de progresso real
-- **Pronto para empacotamento**: Estrutura preparada para PyInstaller
+### Prepare vídeos de forma rápida para qualquer destino.
 
-## 📋 Requisitos
+Converta, comprima, otimize e compartilhe — tudo com poucos cliques e processamento 100% local.
 
-### Sistema
-- Python 3.8+
-- FFmpeg instalado e acessível via PATH
+<br />
 
-### Dependências Python (automáticas)
-- CustomTkinter 5.2.2 - Interface gráfica moderna
+![Beta](https://img.shields.io/badge/status-Beta-007AFF?style=for-the-badge)
+![Open Source](https://img.shields.io/badge/Open%20Source-sim-34C759?style=for-the-badge)
+![Licença](https://img.shields.io/badge/licença-a%20definir-8E8E93?style=for-the-badge)
 
-## 🚀 Instalação Rápida
+![Windows](https://img.shields.io/badge/Windows-suportado-2F80ED?style=for-the-badge&logo=windows)
+![macOS](https://img.shields.io/badge/macOS-suportado-111827?style=for-the-badge&logo=apple)
+![Android](https://img.shields.io/badge/Android-em%20desenvolvimento-34A853?style=for-the-badge&logo=android)
+![iOS](https://img.shields.io/badge/iOS-planejado-8E8E93?style=for-the-badge&logo=apple)
 
-### 1. Clonar/Baixar o projeto
-```bash
-git clone <url-do-repositorio>
-cd "Comprimir videos"
-```
+![FFmpeg](https://img.shields.io/badge/FFmpeg-powered-007808?style=for-the-badge&logo=ffmpeg)
+![Python](https://img.shields.io/badge/Python-Desktop-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Flutter](https://img.shields.io/badge/Flutter-Mobile-02569B?style=for-the-badge&logo=flutter&logoColor=white)
+![Media3](https://img.shields.io/badge/Media3-Android-EA4335?style=for-the-badge&logo=android&logoColor=white)
 
-### 2. Criar ambiente virtual (recomendado)
+<br />
 
-**macOS/Linux:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+[Sobre](#sobre-o-projeto) · [Funcionalidades](#funcionalidades) · [Roadmap](#roadmap) · [Instalação](#instalação) · [Contribuir](#contribuições)
 
-**Windows:**
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. Instalar dependências
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Instalar FFmpeg
-
-**macOS (Homebrew):**
-```bash
-brew install ffmpeg
-```
-
-**Windows (Chocolatey):**
-```bash
-choco install ffmpeg
-```
-
-**Windows (Manual):**
-1. Baixe de: https://ffmpeg.org/download.html
-2. Extraia em uma pasta (ex: C:\ffmpeg)
-3. Adicione ao PATH do Windows
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt update
-sudo apt install ffmpeg
-```
-
-**Linux (Fedora/RHEL):**
-```bash
-sudo dnf install ffmpeg
-```
-
-### 5. Executar a aplicação
-```bash
-python main.py
-```
-
-## 📖 Como Usar
-
-1. **Selecione um Vídeo**
-   - Clique em "Selecionar Vídeo"
-   - O programa exibe: tamanho, duração e resolução
-
-2. **Configure a Compressão**
-   - **Qualidade**: Escolha entre Alta Qualidade, Balanceado, Compressão Forte ou Máxima
-   - **Resolução**: Mantenha original ou reduza para 1080p, 720p ou 480p
-   - **Rotação**: Use quando o vídeo estiver deitado ou invertido
-   - **Áudio**: Opcionalmente remova para compressão ainda maior
-
-3. **Defina Pasta de Saída** (opcional)
-   - Por padrão, salva na mesma pasta do vídeo original
-   - Use "Selecionar Pasta de Saída" para escolher outro local
-
-4. **Clique em "COMPRIMIR VÍDEO"**
-   - Acompanhe o progresso em tempo real
-   - Use "Cancelar" se precisar interromper
-
-   **Ou clique em "EXTRAIR MP3"**
-   - O programa salva o áudio do vídeo em um arquivo `.mp3`
-   - Se o vídeo não tiver áudio, a ferramenta avisa antes de processar
-
-5. **Veja os Resultados**
-   - Na compressão: tamanho original, final e percentual de redução
-   - Na extração: tamanho final do MP3
-   - Abra a pasta contendo o arquivo final
-
-## ⚙️ Perfis de Compressão Explicados
-
-### Alta Qualidade
-- **CRF**: 18 (mais baixo = melhor qualidade)
-- **Preset**: slow (mais tempo, mas mais eficiente)
-- **Uso**: Quando qualidade visual é crítica
-- **Redução típica**: 30-35%
-
-### Balanceado ⭐ (Recomendado)
-- **CRF**: 23 (padrão FFmpeg)
-- **Preset**: medium
-- **Uso**: Melhor custo-benefício para maioria dos casos
-- **Redução típica**: 60%
-
-### Compressão Forte
-- **CRF**: 28 (qualidade menor mas ainda aceitável)
-- **Preset**: medium
-- **Uso**: Quando tamanho é prioridade
-- **Redução típica**: 75%
-
-### Compressão Máxima
-- **CRF**: 32 (máxima compressão)
-- **Preset**: fast (mais rápido, menos eficiente)
-- **Uso**: Apenas para distribuição com requisitos extremos
-- **Redução típica**: 85%
-- **Aviso**: Qualidade visual pode ser notoriamente inferior
-
-## 🎯 Estratégia de Compressão H.264
-
-O programa usa o codec H.264 (MPEG-4 AVC), que é:
-- **Amplamente compatível**: Reproduz em praticamente todos os dispositivos
-- **Eficiente**: Excelente relação qualidade/tamanho
-- **Estável**: Codec maduro e confiável
-
-### Configurações técnicas:
-- **Codec de vídeo**: libx264 (FFmpeg H.264)
-- **Taxa de bits**: Controlada pelo CRF (Constant Rate Factor)
-- **Codec de áudio**: AAC @ 128kbps (padrão)
-- **Container**: MP4 (máxima compatibilidade)
-- **Otimização**: Fast start para streaming progressivo
-- **Rotação**: Filtros FFmpeg `transpose`, `hflip` e `vflip`
-- **Extração MP3**: libmp3lame @ 192kbps
-
-## 📦 Criar Executável com PyInstaller
-
-### 1. Instalar PyInstaller
-```bash
-pip install pyinstaller
-```
-
-### 2. Gerar executável (para seu sistema operacional)
-
-**macOS:**
-```bash
-pyinstaller --onefile --windowed \
-  --name "Compressor de Vídeos" \
-  --icon=icon.icns \
-  main.py
-```
-
-**Windows:**
-```bash
-pyinstaller --onefile --windowed ^
-  --name "Compressor de Vídeos" ^
-  --icon=icon.ico ^
-  main.py
-```
-
-**Linux:**
-```bash
-pyinstaller --onefile --windowed \
-  --name "Compressor de Vídeos" \
-  main.py
-```
-
-### 3. Localize o executável
-- **Arquivo gerado em**: `dist/` ou `dist/Compressor de Vídeos.exe`
-
-### 4. Distribuir
-
-O executável é **portável** e não requer instalação, mas:
-- **FFmpeg ainda é necessário** instalado no sistema onde usar
-
-## 🔧 Estrutura do Projeto
-
-```
-Comprimir videos/
-├── main.py              # Ponto de entrada
-├── ui.py                # Interface gráfica (CustomTkinter)
-├── compressor.py        # Lógica de compressão (FFmpeg)
-├── utils.py             # Funções auxiliares
-├── requirements.txt     # Dependências Python
-└── README.md           # Este arquivo
-```
-
-## 🐛 Solução de Problemas
-
-### FFmpeg não encontrado
-**Solução**: Instale FFmpeg e adicione ao PATH do sistema, ou especifique o caminho completo no código.
-
-### Interface não aparece/congela
-**Solução**: O FFmpeg pode estar rodando. Aguarde ou clique "Cancelar".
-
-### Arquivo final de qualidade ruim
-**Solução**: Use um perfil menos agressivo (ex: Balanceado em vez de Máxima).
-
-### Erro "FFmpeg retornou código não-zero"
-**Solução**: Verifique se o arquivo de entrada é um vídeo válido.
-
-### Arquivo não é criado
-**Solução**: Verifique se a pasta de saída tem permissão de escrita.
-
-## 💡 Dicas de Uso
-
-1. **Teste antes**: Sempre teste com arquivo pequeno antes de processar lotes
-2. **Perfil Balanceado**: Na maioria dos casos, oferece o melhor custo-benefício
-3. **Reduza resolução**: Se gerar arquivo muito grande, reduza para 720p
-4. **Remova áudio se não precisar**: Economiza 10-15% adicionalmente
-5. **Use preset slow em Alta Qualidade**: Gera arquivos menores e melhores
-
-## 📝 Notas Técnicas
-
-- **CRF**: Constant Rate Factor (0-51, default 23). Menor = melhor qualidade
-- **Preset**: Afeta velocidade de codificação vs eficiência (ultrafast a veryslow)
-- **H.264**: Codec de vídeo mais compatível e eficiente disponível
-- **AAC**: Codec de áudio moderno, compatível com praticamente tudo
-
-## 🔒 Privacidade
-
-Todos os arquivos são processados **localmente**. Nenhuma informação é enviada para servidores.
-
-## 📄 Licença
-
-Este projeto é fornecido como está para uso pessoal e comercial.
-
-## 👤 Desenvolvido com ❤️
-
-Desenvolvido para oferecer uma solução simples, rápida e profissional para compressão de vídeos.
+</div>
 
 ---
 
-**Última atualização**: Abril 2026
+## Sumário
 
-**Versão**: 1.0.0
+- [Sobre o Projeto](#sobre-o-projeto)
+- [Filosofia do Projeto](#filosofia-do-projeto)
+- [Escolha do Nome](#escolha-do-nome)
+- [Status](#status)
+- [Funcionalidades](#funcionalidades)
+- [Roadmap](#roadmap)
+- [Nossa Visão](#nossa-visão)
+- [Screenshots](#screenshots)
+- [Demonstração em GIF](#demonstração-em-gif)
+- [Tecnologias](#tecnologias)
+- [Instalação](#instalação)
+- [Estrutura do Projeto](#estrutura-do-projeto)
+- [Documentação](#documentação)
+- [Contribuições](#contribuições)
+- [Open Source](#open-source)
+- [Changelog](#changelog)
+- [Licença](#licença)
+- [Agradecimentos](#agradecimentos)
+
+## Sobre o Projeto
+
+**Project Codename** nasceu como uma ferramenta simples para reduzir o tamanho de vídeos, mas a visão do projeto é maior do que isso.
+
+O objetivo não é ser apenas um compressor de vídeos. A ideia é construir uma ferramenta para **preparar vídeos de forma rápida para qualquer destino**:
+
+- converter;
+- comprimir;
+- otimizar;
+- preparar;
+- compartilhar.
+
+Tudo com poucos cliques, processamento local e uma interface que não atrapalha o usuário.
+
+> [!IMPORTANT]
+> Este projeto está em desenvolvimento ativo e ainda está em fase **Beta**. Funcionalidades, interface e estrutura podem evoluir bastante até uma versão estável.
+
+## Filosofia do Projeto
+
+O software nasceu para resolver problemas reais encontrados no dia a dia.
+
+Queremos uma ferramenta simples. Não queremos competir com grandes editores de vídeo. Queremos que qualquer pessoa consiga preparar um vídeo em poucos segundos, sem precisar entender codecs, presets, formatos, bitrate ou configurações avançadas.
+
+A prioridade é criar uma experiência rápida, clara e confiável:
+
+- sem upload obrigatório;
+- sem complexidade desnecessária;
+- sem transformar uma tarefa simples em um fluxo pesado;
+- com controle suficiente para quem precisa ajustar o resultado.
+
+## Escolha do Nome
+
+O projeto nasceu como uma ideia pessoal e ainda não possui um nome definitivo.
+
+Por enquanto usamos **Project Codename** como nome temporário. Sugestões são muito bem-vindas, e a comunidade poderá participar da escolha do nome final.
+
+Se você tiver uma ideia de nome que transmita simplicidade, velocidade e preparação inteligente de vídeos, abra uma discussão ou issue quando o repositório público estiver disponível.
+
+## Status
+
+| Plataforma | Status | Observações |
+| --- | --- | --- |
+| Desktop | ✔ Beta funcional | Aplicativo em Python com interface CustomTkinter |
+| Windows | ✔ Suportado | Empacotamento `.exe` planejado com PyInstaller |
+| macOS | ✔ Suportado | Execução local e empacotamento `.app` planejados |
+| Linux | 🚧 Futuro | Possível suporte após estabilização |
+| Android | 🚧 Em desenvolvimento | Aplicativo mobile em Flutter |
+| iOS | ❌ Planejado | Ainda sem implementação pública |
+
+## Funcionalidades
+
+| Funcionalidade | Desktop | Android | iOS |
+| --- | :---: | :---: | :---: |
+| Converter qualquer vídeo para MP4 | ✔ | 🚧 | ❌ |
+| Compressão de vídeo | ✔ | 🚧 | ❌ |
+| Perfis de qualidade | ✔ | 🚧 | ❌ |
+| Alteração de resolução | ✔ | 🚧 | ❌ |
+| Rotação | ✔ | 🚧 | ❌ |
+| Remover áudio | ✔ | 🚧 | ❌ |
+| Extração de áudio | ✔ | 🚧 | ❌ |
+| Blur em áreas do vídeo | ✔ | 🚧 | ❌ |
+| Corte rápido / divisão de clipes | ✔ | 🚧 | ❌ |
+| Múltiplos vídeos na timeline | ✔ | 🚧 | ❌ |
+| Compartilhamento rápido | ❌ | 🚧 | ❌ |
+| Receber vídeos pelo menu Compartilhar | ❌ | 🚧 | ❌ |
+| Processamento local | ✔ | 🚧 | ❌ |
+| Sem upload para nuvem | ✔ | 🚧 | ❌ |
+
+Legenda: ✔ disponível · 🚧 em desenvolvimento · ❌ não disponível
+
+## Roadmap
+
+### Beta
+
+- ✔ Desktop funcional
+- ✔ Compressão para MP4
+- ✔ Perfis de qualidade
+- ✔ Alteração de resolução
+- ✔ Rotação
+- ✔ Remoção e extração de áudio
+- ✔ Timeline com segmentos reais
+- ✔ Blur temporal
+- 🚧 Android
+- 🚧 Melhorias de UI/UX
+- 🚧 Empacotamento mais simples para usuários finais
+
+### Próximas versões
+
+- Compressão em lote
+- Melhor estimativa de tamanho final
+- Presets inteligentes por destino
+- Compartilhamento direto
+- Receber vídeos pelo menu Compartilhar do sistema
+- Melhor compatibilidade com codecs de entrada
+- Melhor experiência mobile
+- Versão iOS
+- Documentação técnica para contribuidores
+
+## Nossa Visão
+
+Este projeto não pretende crescer sozinho.
+
+Queremos aprender junto da comunidade, receber sugestões, discutir ideias e construir uma ferramenta realmente útil. O objetivo é criar um software que resolva uma dor comum de forma simples, transparente e agradável.
+
+Se você já precisou reduzir um vídeo para enviar por mensagem, preparar um arquivo para redes sociais, corrigir rotação, remover áudio ou transformar um vídeo enorme em algo compartilhável, este projeto é para você.
+
+## Screenshots
+
+> [!NOTE]
+> Esta seção está preparada para receber imagens oficiais da interface.
+
+| Desktop | Mobile |
+| --- | --- |
+| `screenshots/desktop-home.png` | `screenshots/mobile-home.png` |
+| `screenshots/desktop-editor.png` | `screenshots/mobile-processing.png` |
+
+## Demonstração em GIF
+
+> GIF de demonstração em breve.
+
+```text
+assets/demo/demo.gif
+```
+
+## Tecnologias
+
+### Desktop
+
+- Python
+- Tkinter / CustomTkinter
+- FFmpeg
+- FFprobe
+- PyInstaller para empacotamento
+
+### Mobile
+
+- Flutter
+- Android
+- Media3
+- iOS planejado
+
+## Instalação
+
+### Desktop
+
+#### Requisitos
+
+- Python 3.11 ou superior recomendado
+- FFmpeg e FFprobe instalados no sistema
+- Dependências Python em `requirements.txt`
+
+#### macOS
+
+```bash
+brew install ffmpeg
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 main.py
+```
+
+#### Windows
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+```
+
+FFmpeg pode ser instalado pelo Chocolatey:
+
+```powershell
+choco install ffmpeg
+```
+
+Ou manualmente pelo site oficial:
+
+```text
+https://ffmpeg.org/download.html
+```
+
+#### Linux
+
+> [!NOTE]
+> Suporte Linux ainda não é prioridade da fase Beta, mas a base Python/FFmpeg deve funcionar em muitas distribuições.
+
+Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install ffmpeg
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 main.py
+```
+
+## Estrutura do Projeto
+
+```text
+.
+├── main.py                  # Ponto de entrada do app Desktop
+├── ui.py                    # Interface Desktop
+├── compressor.py            # Integração com FFmpeg/FFprobe
+├── editor_state.py          # Estado do editor temporal
+├── editor_timeline.py       # Timeline do editor Desktop
+├── video_preview.py         # Prévia de vídeo
+├── video_filters.py         # Construção de filtros de vídeo
+├── blur_state.py            # Estado compartilhado de blur
+├── utils.py                 # Utilitários gerais
+├── requirements.txt         # Dependências Python
+├── mobile_app/              # Projeto mobile em Flutter
+├── ROADMAP_MOBILE.md        # Roadmap mobile
+├── TESTES.md                # Notas de testes
+├── EMPACOTAMENTO.md         # Notas de empacotamento
+├── README.md                # Documentação principal em PT-BR
+└── README_EN.md             # Documentação em inglês
+```
+
+## Documentação
+
+- [Roadmap](ROADMAP_MOBILE.md)
+- [Issues](../../issues)
+- [Releases](../../releases)
+- [Wiki](../../wiki)
+- [Testes](TESTES.md)
+- [Empacotamento](EMPACOTAMENTO.md)
+
+> [!TIP]
+> Alguns links dependem da publicação do repositório no GitHub.
+
+## Contribuições
+
+Contribuições são bem-vindas.
+
+Você pode ajudar com:
+
+- código;
+- documentação;
+- tradução;
+- design;
+- UX;
+- testes;
+- ideias;
+- bugs;
+- sugestões.
+
+Antes de propor grandes mudanças, abra uma issue ou discussão para alinharmos a direção. Queremos manter o projeto simples, organizado e útil.
+
+## Open Source
+
+Acreditamos que compartilhar conhecimento fortalece toda a comunidade.
+
+Em tempos de IA, queremos colaborar mais do que competir. Este projeto busca ser um espaço para aprender, construir e melhorar uma ferramenta real com transparência.
+
+Toda contribuição será analisada com cuidado. O foco é manter qualidade, consistência e organização, mesmo com o projeto aberto para colaboração.
+
+## Changelog
+
+O changelog oficial será publicado em breve.
+
+```text
+CHANGELOG.md
+```
+
+## Licença
+
+To be defined.
+
+## Agradecimentos
+
+Obrigado a todas as pessoas, projetos e comunidades que tornam este trabalho possível:
+
+- Comunidade Open Source
+- FFmpeg
+- Flutter
+- Python
+- CustomTkinter
+- Contribuidores atuais e futuros
+
+---
+
+Feito por pessoas que gostam de transformar ferramentas pequenas em soluções realmente úteis.

@@ -646,6 +646,8 @@ class VideoCompressorGUI:
             on_seek=self._set_current_time,
             on_filter_select=self._select_editor_filter,
             on_filter_changed=self._editor_filter_changed,
+            on_filter_delete=self._delete_editor_filter,
+            on_filter_duplicate=self._duplicate_editor_filter,
             on_segment_select=self._select_editor_segment,
             on_segment_delete=self._delete_editor_segment,
             on_segment_duplicate=self._duplicate_editor_segment,

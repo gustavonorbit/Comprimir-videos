@@ -106,6 +106,8 @@ class EditorTimeline:
         on_seek: Callable[[float, str], None],
         on_filter_select: Callable[[str], None],
         on_filter_changed: Callable[[str], None],
+        on_filter_delete: Callable[[str], None],
+        on_filter_duplicate: Callable[[str], None],
         on_segment_select: Callable[[str], None],
         on_segment_delete: Callable[[str], None],
         on_segment_duplicate: Callable[[str], None],
@@ -118,6 +120,8 @@ class EditorTimeline:
         self.on_seek = on_seek
         self.on_filter_select = on_filter_select
         self.on_filter_changed = on_filter_changed
+        self.on_filter_delete = on_filter_delete
+        self.on_filter_duplicate = on_filter_duplicate
         self.on_segment_select = on_segment_select
         self.on_segment_delete = on_segment_delete
         self.on_segment_duplicate = on_segment_duplicate
@@ -590,6 +594,7 @@ class EditorTimeline:
 
     def _update_context_bar(self):
         selected_segment = self.editor_state.selected_segment()
+        selected_filter = self.editor_state.selected_filter()
         can_edit = self._enabled and not self._playback_mode
 
         if selected_segment is not None:
@@ -615,6 +620,24 @@ class EditorTimeline:
                 self.delete_tooltip.set_text("Pause a prévia para editar.")
             else:
                 self.delete_tooltip.set_text("Excluir segmento selecionado.")
+            self.context_bar.grid(row=0, column=0, sticky="ew")
+            return
+
+        if selected_filter is not None:
+            self.context_label.configure(text=f"{selected_filter.name} selecionado")
+            self.btn_context_duplicate.configure(state="normal" if can_edit else "disabled")
+            self.btn_context_delete.configure(
+                state="normal" if can_edit else "disabled",
+                border_color="#FFD2CE" if can_edit else self.colors["border"],
+            )
+            self.duplicate_tooltip.set_text(
+                "Duplicar blur selecionado."
+                if can_edit else "Pause a prévia para editar."
+            )
+            self.delete_tooltip.set_text(
+                "Excluir blur selecionado."
+                if can_edit else "Pause a prévia para editar."
+            )
             self.context_bar.grid(row=0, column=0, sticky="ew")
             return
 
@@ -1012,11 +1035,21 @@ class EditorTimeline:
         selected_segment = self.editor_state.selected_segment()
         if selected_segment is not None:
             self.on_segment_duplicate(selected_segment.id)
+            return
+
+        selected_filter = self.editor_state.selected_filter()
+        if selected_filter is not None:
+            self.on_filter_duplicate(selected_filter.id)
 
     def _delete_selected(self):
         selected_segment = self.editor_state.selected_segment()
         if selected_segment is not None:
             self.on_segment_delete(selected_segment.id)
+            return
+
+        selected_filter = self.editor_state.selected_filter()
+        if selected_filter is not None:
+            self.on_filter_delete(selected_filter.id)
 
     def _timeline_bounds(self, width: int) -> tuple[int, int]:
         return self.LABEL_WIDTH, max(self.LABEL_WIDTH + 1, width - self.RIGHT_PAD)

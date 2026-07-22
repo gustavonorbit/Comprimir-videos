@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Flutter / Dart (mobile_app has its own .gitignore, this is a safety net)
+mobile_app/build/
+mobile_app/.dart_tool/
+
+# Editors
+.vscode/
+.idea/

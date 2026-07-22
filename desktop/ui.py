@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import tkinter as tk
 import threading
 import time
@@ -21,6 +22,7 @@ from compressor import VideoCompressor
 from editor_state import DEFAULT_PRIVACY_BLUR_STRENGTH, BlurFilter, EditorState
 from editor_timeline import EditorTimeline
 from video_preview import VideoPreview
+from utils import subprocess_no_window_kwargs
 
 
 class Tooltip:
@@ -149,6 +151,7 @@ class VideoCompressorGUI:
         self._options_wrapped: Optional[bool] = None
 
         self.font_family = self._detect_font_family()
+        self.icon_font_family = self._detect_icon_font_family()
 
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
@@ -168,6 +171,51 @@ class VideoCompressorGUI:
 
     def _font(self, size: int, weight: Optional[str] = None) -> ctk.CTkFont:
         return ctk.CTkFont(family=self.font_family, size=size, weight=weight)
+
+    # Ícones da barra de ferramentas.
+    #
+    # No macOS os glifos Unicode (↻ ♪ ✂ × ✓) renderizam bem no SF Pro. No Windows
+    # a fonte de UI não possui esses glifos e o Tk cai num fallback tosco — por isso
+    # ali usamos a fonte nativa de ícones (Segoe Fluent Icons no Win11 / Segoe MDL2
+    # Assets no Win10) com os codepoints corretos. Cada ícone é um par
+    # (glifo_windows_PUA, glifo_unicode_fallback); se a fonte nativa não existir,
+    # cai para o mesmo símbolo usado no macOS.
+    _WIN_ICON_GLYPHS = {
+        "rotate": ("", "↻"),      # Rotate
+        "audio_on": ("", "♪"),    # Volume
+        "audio_off": ("", "×♪"),  # Mute
+        "cut": ("", "✂"),         # Cut
+        "check": ("", "✓"),       # CheckMark
+    }
+
+    def _detect_icon_font_family(self) -> Optional[str]:
+        """Fonte de ícones nativa do Windows, se disponível. None em macOS/Linux."""
+        if sys.platform != "win32":
+            return None
+        try:
+            import tkinter.font as tkfont
+
+            available = set(tkfont.families(self.root))
+        except Exception:
+            return None
+        for family in ("Segoe Fluent Icons", "Segoe MDL2 Assets"):
+            if family in available:
+                return family
+        return None
+
+    def _uses_icon_font(self) -> bool:
+        return self.icon_font_family is not None
+
+    def _icon(self, name: str) -> str:
+        """Glifo do ícone conforme a plataforma/fonte disponível."""
+        win_glyph, fallback = self._WIN_ICON_GLYPHS[name]
+        return win_glyph if self._uses_icon_font() else fallback
+
+    def _icon_font(self, size: int, weight: Optional[str] = None) -> ctk.CTkFont:
+        """Fonte para textos de ícone (nativa no Windows, senão a fonte de UI)."""
+        if self._uses_icon_font():
+            return ctk.CTkFont(family=self.icon_font_family, size=size)
+        return self._font(size, weight)
 
     def _configure_window(self):
         """Configura tamanho compacto inicial, centralização e mínimo seguro."""
@@ -532,9 +580,9 @@ class VideoCompressorGUI:
 
         self.btn_rotate = ctk.CTkButton(
             self.controls_row,
-            text="↻",
+            text=self._icon("rotate"),
             command=self._cycle_rotation,
-            font=self._font(13, "bold"),
+            font=self._icon_font(13, "bold"),
             width=self.TOOL_ICON_BUTTON_SIZE,
             height=self.TOOL_ICON_BUTTON_SIZE,
             corner_radius=self.TOOL_ICON_RADIUS,
@@ -547,9 +595,9 @@ class VideoCompressorGUI:
 
         self.btn_audio_toggle = ctk.CTkButton(
             self.controls_row,
-            text="♪",
+            text=self._icon("audio_on"),
             command=self._toggle_remove_audio,
-            font=self._font(13, "bold"),
+            font=self._icon_font(13, "bold"),
             width=self.TOOL_ICON_BUTTON_SIZE,
             height=self.TOOL_ICON_BUTTON_SIZE,
             corner_radius=self.TOOL_ICON_RADIUS,
@@ -562,9 +610,9 @@ class VideoCompressorGUI:
 
         self.btn_split_clip = ctk.CTkButton(
             self.controls_row,
-            text="✂",
+            text=self._icon("cut"),
             command=self._split_clip,
-            font=self._font(14, "bold"),
+            font=self._icon_font(14, "bold"),
             width=self.TOOL_ICON_BUTTON_SIZE,
             height=self.TOOL_ICON_BUTTON_SIZE,
             corner_radius=self.TOOL_ICON_RADIUS,
@@ -789,12 +837,19 @@ class VideoCompressorGUI:
         return "break"
 
     def _update_rotation_button(self):
-        label = "↻" if self.rotation_degrees == 0 else f"↻ {self.rotation_degrees}°"
+        if self._uses_icon_font():
+            # A fonte de ícones não possui dígitos; o ângulo atual vai no tooltip.
+            label = self._icon("rotate")
+        else:
+            label = "↻" if self.rotation_degrees == 0 else f"↻ {self.rotation_degrees}°"
         self.btn_rotate.configure(text=label)
         self.rotation_tooltip.set_text(self._rotation_tooltip_text())
 
     def _rotation_tooltip_text(self) -> str:
         next_rotation = {0: 90, 90: 180, 180: 270, 270: 0}.get(self.rotation_degrees, 90)
+        if self._uses_icon_font():
+            # O ângulo atual não cabe no ícone; mostramos aqui no Windows.
+            return f"Rotação atual: {self.rotation_degrees}° · Girar para {next_rotation}°"
         return f"Girar para {next_rotation}°"
 
     def _reset_rotation(self):
@@ -821,7 +876,7 @@ class VideoCompressorGUI:
     def _update_audio_toggle(self):
         if self.remove_audio:
             self.btn_audio_toggle.configure(
-                text="×♪",
+                text=self._icon("audio_off"),
                 fg_color=self.ACCENT_SOFT_COLOR,
                 hover_color="#DDEEFF",
                 text_color=self.ACCENT_COLOR,
@@ -829,7 +884,7 @@ class VideoCompressorGUI:
             )
         else:
             self.btn_audio_toggle.configure(
-                text="♪",
+                text=self._icon("audio_on"),
                 fg_color="#FFFFFF",
                 hover_color="#F2F6FB",
                 text_color=self.TEXT_COLOR,
@@ -1012,8 +1067,8 @@ class VideoCompressorGUI:
         self.progress_result_icon.grid_propagate(False)
         self.progress_result_icon_label = ctk.CTkLabel(
             self.progress_result_icon,
-            text="✓",
-            font=self._font(14, "bold"),
+            text=self._icon("check"),
+            font=self._icon_font(14, "bold"),
             text_color="#FFFFFF"
         )
         self.progress_result_icon_label.place(relx=0.5, rely=0.47, anchor="center")
@@ -1760,7 +1815,7 @@ class VideoCompressorGUI:
                 "-of", "json",
                 file_path
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, **subprocess_no_window_kwargs())
 
             if result.returncode != 0:
                 return "--"
@@ -1943,7 +1998,7 @@ class VideoCompressorGUI:
         self.progress_result_frame.grid_remove()
         self.progress_result_buttons.grid_remove()
         self.progress_result_icon.configure(fg_color=self.SUCCESS_COLOR)
-        self.progress_result_icon_label.configure(text="✓")
+        self.progress_result_icon_label.configure(text=self._icon("check"))
         self.label_result_sizes.configure(text="--")
         self.label_result_savings.configure(text="--")
         self.label_result_time.configure(text="--")
@@ -2184,7 +2239,7 @@ class VideoCompressorGUI:
         self.progress_bar.grid_remove()
         self.label_progress.configure(text="Arquivo salvo na mesma pasta do original")
         self.progress_result_icon.configure(fg_color=self.SUCCESS_COLOR)
-        self.progress_result_icon_label.configure(text="✓")
+        self.progress_result_icon_label.configure(text=self._icon("check"))
         self.label_result_sizes.configure(text=f"{original_size} → {final_size}")
 
         if title == "Compressão concluída":

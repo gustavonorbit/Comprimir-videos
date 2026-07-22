@@ -7,6 +7,7 @@ tk.PhotoImage. Não reproduz áudio e não depende de player externo instalado.
 
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -16,6 +17,7 @@ import tkinter as tk
 
 from blur_state import BlurState, NormalizedRect
 from video_filters import build_video_filter, rotated_dimensions
+from utils import subprocess_no_window_kwargs
 
 
 class PreviewMuteButton:
@@ -211,6 +213,12 @@ class VideoPreview:
         self.source_width = 0
         self.source_height = 0
         self.rotation_degrees = 0
+        # Tamanho de stage realmente usado para renderizar o frame atualmente
+        # exibido (definido em _apply_frame). No Windows, a geometria dos overlays
+        # de blur é calculada por ele para ficar sempre alinhada ao frame visível,
+        # mesmo quando o stage ainda não atingiu o tamanho final (primeiro blur).
+        self._rendered_stage_size: Optional[tuple[int, int]] = None
+        self._pending_render_size: Optional[tuple[int, int]] = None
         self.blur_states: list[BlurState] = []
         self.editor_overlays: list[dict] = []
         self.is_playing = False
@@ -557,6 +565,8 @@ class VideoPreview:
         self.source_width = 0
         self.source_height = 0
         self.rotation_degrees = 0
+        self._rendered_stage_size = None
+        self._pending_render_size = None
         self.blur_states = []
         self.editor_overlays = []
         self._overlay_drag = None
@@ -690,6 +700,7 @@ class VideoPreview:
             return
 
         width, height = self._stage_size()
+        self._pending_render_size = (width, height)
         request_id = self._request_id
         media_path, source_seconds, mapped_width, mapped_height = self._map_timeline_time(display_seconds)
         rotation_degrees = self.rotation_degrees
@@ -748,7 +759,7 @@ class VideoPreview:
                 "-vcodec", "png",
                 "-"
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=8)
+            result = subprocess.run(cmd, capture_output=True, timeout=8, **subprocess_no_window_kwargs())
 
             if result.returncode != 0 or not result.stdout:
                 raise RuntimeError("frame unavailable")
@@ -812,6 +823,8 @@ class VideoPreview:
         try:
             image = tk.PhotoImage(data=data, format="png")
             self._current_image = image
+            if self._pending_render_size is not None:
+                self._rendered_stage_size = self._pending_render_size
             self._hide_empty_state()
             self.image_label.delete("frame_image")
             self.image_label.create_image(0, 0, image=image, anchor="nw", tags=("frame_image",))
@@ -1131,11 +1144,6 @@ class VideoPreview:
         if self._selection_start is None or self._selection_current is None:
             return None
 
-        content = self._video_content_rect()
-        if content is None:
-            return None
-
-        offset_x, offset_y, content_width, content_height = content
         start_x, start_y = self._selection_start
         end_x, end_y = self._selection_current
         left = min(start_x, end_x)
@@ -1146,11 +1154,17 @@ class VideoPreview:
         if right - left < 8 or bottom - top < 8:
             return None
 
+        # Conversão tela → vídeo pela função única (respeita letterbox/rotação).
+        top_left = self._screen_to_video_norm(left, top)
+        bottom_right = self._screen_to_video_norm(right, bottom)
+        if top_left is None or bottom_right is None:
+            return None
+
         rect = NormalizedRect(
-            x=(left - offset_x) / content_width,
-            y=(top - offset_y) / content_height,
-            width=(right - left) / content_width,
-            height=(bottom - top) / content_height
+            x=top_left[0],
+            y=top_left[1],
+            width=bottom_right[0] - top_left[0],
+            height=bottom_right[1] - top_left[1],
         ).clamped()
 
         return rect if rect.is_usable() else None
@@ -1165,15 +1179,44 @@ class VideoPreview:
         clamped_y = max(offset_y, min(offset_y + content_height, float(y)))
         return clamped_x, clamped_y
 
+    def _content_stage_size(self) -> tuple[int, int]:
+        """Tamanho de stage usado para mapear os overlays de blur.
+
+        No Windows, prioriza o tamanho com que o frame exibido foi realmente
+        renderizado (``_rendered_stage_size``). Assim a seleção e a caixa do blur
+        ficam alinhadas ao que está visível mesmo quando o stage ainda não chegou
+        ao tamanho final — corrige o desalinhamento do primeiro blur.
+        Em macOS/Linux usa o tamanho ao vivo, exatamente como antes.
+        """
+        if sys.platform == "win32" and self._rendered_stage_size is not None:
+            return self._rendered_stage_size
+        return self._stage_size()
+
     def _video_content_rect(self) -> Optional[tuple[float, float, float, float]]:
-        stage_width, stage_height = self._stage_size()
+        """Geometria ÚNICA do vídeo dentro do canvas: (offset_x, offset_y, w, h).
+
+        É a única fonte de verdade para toda conversão de coordenadas de blur —
+        criação, arrasto, redimensionamento e desenho passam por aqui (via
+        ``_screen_to_video_norm`` / ``_video_norm_to_screen``), garantindo que
+        não haja cálculo divergente entre eles.
+
+        Considera:
+        - ``source_width/source_height`` = dimensões de EXIBIÇÃO do vídeo (já
+          descontada a rotação de metadados em get_video_info), mais a rotação
+          aplicada pelo usuário (``rotated_dimensions``);
+        - o tamanho real em que o frame exibido foi renderizado
+          (``_content_stage_size``), não um valor em cache antigo;
+        - o letterbox/pillarbox: a área preta é descontada aqui pelo mesmo
+          ``force_original_aspect_ratio=decrease`` + ``pad`` usado pelo FFmpeg.
+        """
+        stage_width, stage_height = self._content_stage_size()
         source_width, source_height = rotated_dimensions(
             self.source_width,
             self.source_height,
             self.rotation_degrees
         )
 
-        if source_width <= 0 or source_height <= 0:
+        if source_width <= 0 or source_height <= 0 or stage_width <= 0 or stage_height <= 0:
             return None
 
         scale = min(stage_width / source_width, stage_height / source_height)
@@ -1183,18 +1226,35 @@ class VideoPreview:
         offset_y = (stage_height - content_height) / 2
         return offset_x, offset_y, content_width, content_height
 
-    def _region_to_canvas_rect(self, region: NormalizedRect) -> Optional[tuple[float, float, float, float]]:
-        content = self._video_content_rect()
-        if content is None:
+    def _screen_to_video_norm(self, x: float, y: float) -> Optional[tuple[float, float]]:
+        """Converte coordenadas de tela (canvas) → coordenadas normalizadas do
+        vídeo real (0..1), descontando offset do letterbox e escala. Função única
+        usada por criação/arrasto/redimensionamento."""
+        geometry = self._video_content_rect()
+        if geometry is None:
             return None
+        offset_x, offset_y, content_width, content_height = geometry
+        if content_width <= 0 or content_height <= 0:
+            return None
+        return (float(x) - offset_x) / content_width, (float(y) - offset_y) / content_height
 
+    def _video_norm_to_screen(self, nx: float, ny: float) -> Optional[tuple[float, float]]:
+        """Converte coordenadas normalizadas do vídeo (0..1) → coordenadas de tela
+        (canvas). Inversa exata de ``_screen_to_video_norm``, usada para desenhar
+        qualquer blur."""
+        geometry = self._video_content_rect()
+        if geometry is None:
+            return None
+        offset_x, offset_y, content_width, content_height = geometry
+        return offset_x + float(nx) * content_width, offset_y + float(ny) * content_height
+
+    def _region_to_canvas_rect(self, region: NormalizedRect) -> Optional[tuple[float, float, float, float]]:
         rect = region.clamped()
-        offset_x, offset_y, content_width, content_height = content
-        left = offset_x + rect.x * content_width
-        top = offset_y + rect.y * content_height
-        right = left + rect.width * content_width
-        bottom = top + rect.height * content_height
-        return left, top, right, bottom
+        top_left = self._video_norm_to_screen(rect.x, rect.y)
+        bottom_right = self._video_norm_to_screen(rect.x + rect.width, rect.y + rect.height)
+        if top_left is None or bottom_right is None:
+            return None
+        return top_left[0], top_left[1], bottom_right[0], bottom_right[1]
 
     def _draw_blur_overlay(self):
         try:

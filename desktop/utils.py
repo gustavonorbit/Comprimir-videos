@@ -5,7 +5,29 @@ Funções utilitárias para o compressor de vídeos.
 import os
 import platform
 import subprocess
+import sys
 from typing import Tuple
+
+
+def subprocess_no_window_kwargs() -> dict:
+    """kwargs para chamadas de subprocess que evitam abrir uma janela de console.
+
+    Somente no Windows: como o app é empacotado como GUI (``console=False``), cada
+    processo externo (ffmpeg/ffprobe) abriria uma janela de terminal ao ser
+    disparado. Aqui suprimimos essa janela com ``CREATE_NO_WINDOW`` + ``SW_HIDE``.
+
+    Em macOS/Linux retorna ``{}`` — nenhum efeito, comportamento inalterado.
+    """
+    if sys.platform != "win32":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
 
 
 def format_file_size(bytes_size: int) -> str:
@@ -143,7 +165,8 @@ def validate_ffmpeg_installation() -> Tuple[bool, str]:
         result = subprocess.run(
             ['ffmpeg', '-version'],
             capture_output=True,
-            timeout=5
+            timeout=5,
+            **subprocess_no_window_kwargs()
         )
         if result.returncode == 0:
             # Extrair versão

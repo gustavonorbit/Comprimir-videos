@@ -10,25 +10,16 @@ Converta, comprima, otimize e compartilhe — tudo com poucos cliques e processa
 
 <br />
 
-![Beta](https://img.shields.io/badge/status-Beta-007AFF?style=for-the-badge)
-![Open Source](https://img.shields.io/badge/Open%20Source-sim-34C759?style=for-the-badge)
-![Licença](https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge)
-
-![Windows](https://img.shields.io/badge/Windows-suportado-2F80ED?style=for-the-badge&logo=windows)
-![macOS](https://img.shields.io/badge/macOS-suportado-111827?style=for-the-badge&logo=apple)
-![Android](https://img.shields.io/badge/Android-em%20desenvolvimento-34A853?style=for-the-badge&logo=android)
-![iOS](https://img.shields.io/badge/iOS-planejado-8E8E93?style=for-the-badge&logo=apple)
-
-![FFmpeg](https://img.shields.io/badge/FFmpeg-powered-007808?style=for-the-badge&logo=ffmpeg)
-![Python](https://img.shields.io/badge/Python-Desktop-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Flutter](https://img.shields.io/badge/Flutter-Mobile-02569B?style=for-the-badge&logo=flutter&logoColor=white)
-![Media3](https://img.shields.io/badge/Media3-Android-EA4335?style=for-the-badge&logo=android&logoColor=white)
-
-<br />
-
-[**⬇️ Baixar o app (macOS)**](distribuicao/) · [Sobre](#sobre-o-projeto) · [Funcionalidades](#funcionalidades) · [Roadmap](#roadmap) · [Instalação](#instalação) · [Contribuir](#contribuições)
+[Download](#-download) · [Sobre](#sobre-o-projeto) · [Funcionalidades](#funcionalidades) · [Roadmap](#roadmap) · [Instalação](#instalação) · [Contribuir](#contribuições)
 
 </div>
+
+---
+
+## 📦 Download
+
+- 🍎 [Download para macOS](./distribuicao/Project%20Codename.dmg)
+- 🪟 [Download para Windows (.exe)](./distribuicao/Project%20Codename.exe)
 
 ---
 

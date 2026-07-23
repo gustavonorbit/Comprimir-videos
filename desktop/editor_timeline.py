@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 from typing import Callable, Optional
 
 import customtkinter as ctk
@@ -353,7 +354,7 @@ class EditorTimeline:
             anchor="w",
         )
         self.canvas.create_line(left, self.RULER_HEIGHT, right, self.RULER_HEIGHT, fill="#D5DDEC", width=1)
-        for tick in self._tick_times():
+        for tick in self._ruler_tick_times(width):
             x = self._time_to_x(tick, width)
             major = tick in (0.0, self.editor_state.playback.duration)
             self.canvas.create_line(
@@ -1117,6 +1118,47 @@ class EditorTimeline:
         if not values or values[-1] != duration:
             values.append(duration)
         return values
+
+    def _ruler_tick_times(self, width: int) -> list[float]:
+        """Ticks que terão label desenhado na régua.
+
+        No Windows, remove labels que se sobreporiam (respeitando um espaçamento
+        mínimo em pixels) e **sempre preserva o marcador final** (a duração),
+        descartando o penúltimo se ele colidir — evita o amontoado no fim da régua.
+        Em macOS/Linux retorna a lista completa, sem alteração de comportamento.
+        """
+        ticks = self._tick_times()
+        if sys.platform != "win32" or len(ticks) <= 2:
+            return ticks
+
+        kept: list[float] = []
+        kept_x: list[float] = []
+        last_index = len(ticks) - 1
+        for index, tick in enumerate(ticks):
+            x = self._time_to_x(tick, width)
+            if not kept_x or (x - kept_x[-1]) >= self._label_min_gap(tick, kept[-1]):
+                kept.append(tick)
+                kept_x.append(x)
+            elif index == last_index:
+                # Colisão com o(s) anterior(es): remove até caber e mantém o final.
+                while kept_x and (x - kept_x[-1]) < self._label_min_gap(tick, kept[-1]):
+                    kept.pop()
+                    kept_x.pop()
+                kept.append(tick)
+                kept_x.append(x)
+            # Caso contrário, pula este tick (reduz a densidade de labels).
+        return kept
+
+    def _label_min_gap(self, current: float, previous: Optional[float]) -> float:
+        """Distância mínima (px) entre os centros de dois labels de tempo vizinhos."""
+        if previous is None:
+            return 0.0
+
+        def label_width(seconds: float) -> float:
+            # ~7px por caractere no tamanho 9 (bold), com folga lateral.
+            return len(self._format_time(seconds)) * 7 + 10
+
+        return (label_width(current) + label_width(previous)) / 2
 
     def _tick_step(self, duration: float) -> float:
         if duration <= 20:

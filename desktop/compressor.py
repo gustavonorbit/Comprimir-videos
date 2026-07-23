@@ -14,6 +14,7 @@ from typing import Callable, Optional, Sequence, Tuple
 import re
 
 from video_filters import build_video_filter, rotated_dimensions, rotation_filter
+from utils import subprocess_no_window_kwargs
 
 
 def _bundled_binary_candidates(name: str) -> list:
@@ -92,7 +93,8 @@ class VideoCompressor:
             result = subprocess.run(
                 ['which', name] if os.name != 'nt' else ['where', name],
                 capture_output=True,
-                text=True
+                text=True,
+                **subprocess_no_window_kwargs()
             )
             if result.returncode == 0:
                 return result.stdout.strip().split('\n')[0]
@@ -129,7 +131,8 @@ class VideoCompressor:
             result = subprocess.run(
                 ['which', name] if os.name != 'nt' else ['where', name],
                 capture_output=True,
-                text=True
+                text=True,
+                **subprocess_no_window_kwargs()
             )
             if result.returncode == 0:
                 return result.stdout.strip().split('\n')[0]
@@ -155,7 +158,8 @@ class VideoCompressor:
             result = subprocess.run(
                 [self.ffmpeg_path, '-version'],
                 capture_output=True,
-                timeout=5
+                timeout=5,
+                **subprocess_no_window_kwargs()
             )
             return result.returncode == 0
         except Exception:
@@ -167,7 +171,8 @@ class VideoCompressor:
             result = subprocess.run(
                 [self.ffprobe_path, '-version'],
                 capture_output=True,
-                timeout=5
+                timeout=5,
+                **subprocess_no_window_kwargs()
             )
             return result.returncode == 0
         except Exception:
@@ -189,33 +194,73 @@ class VideoCompressor:
                 '-v', 'error',
                 '-select_streams', 'v:0',
                 '-show_entries',
-                'stream=width,height,duration',
+                'stream=width,height,duration:stream_side_data=rotation:stream_tags=rotate',
                 '-of', 'json',
                 file_path
             ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, **subprocess_no_window_kwargs())
+
             if result.returncode != 0:
                 return None
-            
+
             data = json.loads(result.stdout)
             if not data.get('streams'):
                 return None
-            
+
             stream = data['streams'][0]
-            
+
             # Obter duração
             duration = float(stream.get('duration', 0))
-            
+
+            stored_width = int(stream.get('width', 0) or 0)
+            stored_height = int(stream.get('height', 0) or 0)
+
+            # Dimensões de EXIBIÇÃO: o FFmpeg auto-rotaciona o frame conforme o
+            # display matrix (rotação de metadados) tanto na prévia quanto no
+            # export. Para vídeos verticais de celular (gravados 1920x1080 com
+            # rotação 90°), a orientação exibida difere da armazenada. Todo o
+            # cálculo de posição de blur precisa usar a orientação EXIBIDA.
+            rotation = self._display_rotation(stream)
+            if rotation in (90, 270):
+                display_width, display_height = stored_height, stored_width
+            else:
+                display_width, display_height = stored_width, stored_height
+
             return {
-                'width': stream.get('width', 0),
-                'height': stream.get('height', 0),
+                'width': display_width,
+                'height': display_height,
+                'stored_width': stored_width,
+                'stored_height': stored_height,
+                'display_rotation': rotation,
                 'duration': duration,
                 'file_size': os.path.getsize(file_path)
             }
         except Exception as e:
             return None
+
+    @staticmethod
+    def _display_rotation(stream: dict) -> int:
+        """Rotação de exibição (0/90/180/270) a partir do display matrix/tags.
+
+        O FFmpeg reporta a rotação do display matrix como um ângulo que pode ser
+        negativo (ex: -90). Aqui normalizamos para 0..359; apenas a paridade de
+        90° importa para decidir se largura/altura são trocadas.
+        """
+        raw = None
+        for side_data in stream.get('side_data_list', []) or []:
+            if 'rotation' in side_data:
+                raw = side_data.get('rotation')
+                break
+        if raw is None:
+            raw = (stream.get('tags', {}) or {}).get('rotate')
+        if raw is None:
+            return 0
+        try:
+            angle = int(round(float(raw)))
+        except (TypeError, ValueError):
+            return 0
+        return angle % 360
     
     def _calculate_scale_filter(self, original_info: dict, target_height: int) -> str:
         """
@@ -361,7 +406,8 @@ class VideoCompressor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                universal_newlines=True
+                universal_newlines=True,
+                **subprocess_no_window_kwargs()
             )
             
             # Processar saída e extrair progresso
@@ -479,7 +525,7 @@ class VideoCompressor:
                 '-of', 'json',
                 input_file
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, **subprocess_no_window_kwargs())
             if result.returncode != 0:
                 return False
             data = json.loads(result.stdout)
@@ -690,7 +736,8 @@ class VideoCompressor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                universal_newlines=True
+                universal_newlines=True,
+                **subprocess_no_window_kwargs()
             )
 
             self._process_output(video_info['duration'], progress_callback)

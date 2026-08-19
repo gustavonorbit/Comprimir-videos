@@ -1,6 +1,6 @@
 <div align="center">
 
-# Project Codename
+# Compídeo
 
 **🇧🇷 Português (Brasil)** · [🇺🇸 English](README_EN.md)
 

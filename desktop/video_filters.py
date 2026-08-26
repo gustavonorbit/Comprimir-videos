@@ -88,6 +88,56 @@ def blur_radius(intensity: float) -> int:
     return map_blur_intensity(intensity).luma_radius
 
 
+def validate_temporal_blurs(
+    temporal_blurs: Optional[Sequence],
+    width: int,
+    height: int,
+) -> list[str]:
+    """Verifica cada blur temporal contra as dimensoes reais do quadro de export
+    e retorna avisos claros para os que serao ignorados (fora do quadro, sem
+    efeito ou com dados invalidos). Nao lanca excecao e nao altera a lista de
+    entrada: quem monta o filtro (`_build_blur_pipeline`) ja descarta os mesmos
+    itens silenciosamente — esta funcao apenas torna esse descarte diagnosticavel.
+    """
+    warnings: list[str] = []
+
+    if width <= 0 or height <= 0:
+        if temporal_blurs:
+            warnings.append(
+                f"Dimensoes de video invalidas ({width}x{height}): "
+                f"{len(list(temporal_blurs))} blur(s) serao ignorados."
+            )
+        return warnings
+
+    for index, item in enumerate(temporal_blurs or [], start=1):
+        try:
+            start_time = float(getattr(item, "start_time"))
+            end_time = float(getattr(item, "end_time"))
+            state = item.to_blur_state()
+        except Exception:
+            warnings.append(f"Blur #{index}: dados invalidos, sera ignorado.")
+            continue
+
+        if end_time <= start_time:
+            warnings.append(f"Blur #{index}: duracao invalida (fim <= inicio), sera ignorado.")
+            continue
+
+        if not state.has_effect():
+            warnings.append(f"Blur #{index}: regiao fora do quadro ou intensidade nula, sera ignorado.")
+            continue
+
+        region = state.region.clamped()
+        _, _, pixel_width, pixel_height = region_to_pixels(region, width, height)
+        blur_params = map_blur_intensity(state.intensity, pixel_width, pixel_height)
+        if blur_params.luma_radius <= 0:
+            warnings.append(
+                f"Blur #{index}: area util no quadro {width}x{height} e pequena demais "
+                "para gerar efeito visivel, sera ignorado."
+            )
+
+    return warnings
+
+
 def _plain_filter(tail_filters: Sequence[str], linear_filters: Sequence[str]) -> str:
     filters = [item for item in linear_filters if item]
     filters.extend(item for item in tail_filters if item)

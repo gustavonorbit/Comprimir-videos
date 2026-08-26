@@ -18,6 +18,20 @@ mobile_app/.dart_tool/
 desktop/build/
 desktop/dist/
 
+# Binários do FFmpeg/FFprobe. Não são versionados: os builds estáticos
+# universais do macOS têm ~154 MB cada, acima do limite rígido de 100 MB por
+# arquivo do GitHub. São baixados e conferidos por SHA-256 com
+#   python desktop/tools/fetch_ffmpeg.py
+# a partir das URLs fixadas em desktop/tools/ffmpeg_manifest.json (esse SIM é versionado).
+desktop/bin/ffmpeg
+desktop/bin/ffprobe
+desktop/bin/ffmpeg.exe
+desktop/bin/ffprobe.exe
+
+# Vídeos de origem e saídas do benchmark (regeráveis via run_bench.py;
+# os JSONs de resultado em results/ SÃO versionados)
+desktop/tests/bench/media/
+
 # Editors
 .vscode/
 .idea/

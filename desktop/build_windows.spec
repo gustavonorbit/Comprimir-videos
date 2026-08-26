@@ -17,10 +17,29 @@ APP_NAME = "Project Codename"
 
 datas = collect_data_files("customtkinter")
 
+
+
+def _bundled_binary(name):
+    """Caminho do binário embutido, com erro claro se ele não estiver lá.
+
+    Os binários não são versionados no git (ver .gitignore): são baixados por
+    tools/fetch_ffmpeg.py. Antes de buildar:
+
+        python desktop\\tools\\fetch_ffmpeg.py
+    """
+    path = SPEC_DIR / "bin" / name
+    if not path.exists():
+        raise SystemExit(
+            f"Binário do FFmpeg ausente: {path}\n"
+            "Rode antes de buildar:  python desktop\\tools\\fetch_ffmpeg.py"
+        )
+    return str(path)
+
+
 # Binários do FFmpeg para Windows (versões .exe embutidas no bundle).
 binaries = [
-    (str(SPEC_DIR / "bin" / "ffmpeg.exe"), "bin"),
-    (str(SPEC_DIR / "bin" / "ffprobe.exe"), "bin"),
+    (_bundled_binary("ffmpeg.exe"), "bin"),
+    (_bundled_binary("ffprobe.exe"), "bin"),
 ]
 
 a = Analysis(

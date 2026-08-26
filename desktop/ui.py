@@ -4,6 +4,7 @@ Construída com CustomTkinter para visual moderno.
 """
 
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -21,8 +22,11 @@ from blur_state import NormalizedRect
 from compressor import VideoCompressor
 from editor_state import DEFAULT_PRIVACY_BLUR_STRENGTH, BlurFilter, EditorState
 from editor_timeline import EditorTimeline
+from video_filters import validate_temporal_blurs
 from video_preview import VideoPreview
 from utils import subprocess_no_window_kwargs
+
+logger = logging.getLogger(__name__)
 
 
 class Tooltip:
@@ -140,6 +144,7 @@ class VideoCompressorGUI:
         self.processing_temporal_blurs = []
         self.processing_segments = []
         self.is_compressing = False
+        self._cancel_requested_by_user = False
         self.processing_started_at: Optional[float] = None
         self.last_operation_succeeded = False
         self.last_output_file: Optional[str] = None
@@ -1858,6 +1863,33 @@ class VideoCompressorGUI:
 
         return str(candidate)
 
+    def _warn_about_invalid_blurs(self, temporal_blurs: list, segments: list):
+        """Avisa o usuário (no log de status) sobre blurs que serão ignorados na
+        exportação por estarem fora do quadro ou com dados inválidos, em vez de
+        deixá-los desaparecer silenciosamente do resultado final."""
+        if not temporal_blurs:
+            return
+
+        seen_paths = set()
+        warnings: list[str] = []
+        for segment in (segments or []):
+            path = getattr(segment, "source_path", None) or self.input_file
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            info = self.compressor.get_video_info(path)
+            if not info:
+                continue
+            warnings.extend(validate_temporal_blurs(temporal_blurs, info.get('width', 0), info.get('height', 0)))
+
+        if not warnings:
+            return
+
+        logger.warning("%d aviso(s) de blur antes da exportação: %s", len(warnings), warnings)
+        self._add_status(f"{len(warnings)} blur(s) serão ignorados na exportação:")
+        for warning in warnings:
+            self._add_status(f"  - {warning}")
+
     def _start_compression(self):
         """Inicia o processo de compressão."""
         if self._editing_locked_by_playback():
@@ -1882,6 +1914,8 @@ class VideoCompressorGUI:
 
         temporal_blurs = self.editor_state.blur_filters_for_export()
         segments = self.editor_state.segments_for_export()
+
+        self._warn_about_invalid_blurs(temporal_blurs, segments)
 
         output_file = self._build_unique_output_path("_comprimido", ".mp4")
 
@@ -1942,6 +1976,7 @@ class VideoCompressorGUI:
         self.last_operation_succeeded = False
         self.last_output_file = None
         self.processing_terminal_message = None
+        self._cancel_requested_by_user = False
         if self.video_preview.pause_for_processing():
             self._add_status("Prévia pausada durante o processamento.")
         self._reset_progress_result()
@@ -2049,6 +2084,10 @@ class VideoCompressorGUI:
 
             if success:
                 self._show_results(output_file)
+            elif self._cancel_requested_by_user:
+                # O usuário já viu a confirmação de cancelamento em
+                # `_cancel_compression`; não mostrar também um popup de "Erro".
+                self._add_status(f"Compressão finalizada por cancelamento: {message}")
             else:
                 self.processing_terminal_message = "Não foi possível concluir a compressão."
                 self._add_status(f"Erro: {message}")
@@ -2077,6 +2116,8 @@ class VideoCompressorGUI:
 
             if success:
                 self._show_audio_results(output_file)
+            elif self._cancel_requested_by_user:
+                self._add_status(f"Extração finalizada por cancelamento: {message}")
             else:
                 self.processing_terminal_message = "Não foi possível extrair o áudio."
                 self._add_status(f"Erro: {message}")
@@ -2345,6 +2386,7 @@ class VideoCompressorGUI:
     def _cancel_compression(self):
         """Cancela a compressão em andamento."""
         if messagebox.askyesno("Cancelar", "Deseja realmente cancelar o processamento?"):
+            self._cancel_requested_by_user = True
             self.compressor.cancel_compression()
             self.last_operation_succeeded = False
             self.processing_terminal_message = "Processamento cancelado."

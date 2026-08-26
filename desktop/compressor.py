@@ -3,6 +3,7 @@ Módulo de compressão de vídeos usando FFmpeg.
 Gerencia conversão, redimensionamento e otimização de vídeos.
 """
 
+import logging
 import os
 import subprocess
 import json
@@ -13,8 +14,46 @@ from types import SimpleNamespace
 from typing import Callable, Optional, Sequence, Tuple
 import re
 
-from video_filters import build_video_filter, rotated_dimensions, rotation_filter
+from video_filters import build_video_filter, rotated_dimensions, rotation_filter, validate_temporal_blurs
 from utils import subprocess_no_window_kwargs
+import encoder_caps
+import encoder_policy
+
+logger = logging.getLogger(__name__)
+
+# Linhas de banner/build que o ffmpeg sempre imprime no topo do stderr, antes de
+# qualquer erro real. Precisam ser descartadas ao extrair a causa de uma falha,
+# senao a mensagem mostrada ao usuario e sempre "ffmpeg version X.Y Copyright...".
+_FFMPEG_BANNER_PREFIXES = (
+    "ffmpeg version",
+    "built with",
+    "configuration:",
+    "libavutil",
+    "libavcodec",
+    "libavformat",
+    "libavdevice",
+    "libavfilter",
+    "libswscale",
+    "libswresample",
+    "libpostproc",
+    "press [q]",
+    "frame=",
+)
+
+
+def _extract_ffmpeg_error(stderr_text: str, max_len: int = 400) -> str:
+    """Extrai a mensagem de erro real do stderr do ffmpeg, descartando o banner
+    de versao/build/progresso que nao explica a causa da falha."""
+    lines = [line.strip() for line in (stderr_text or "").splitlines()]
+    meaningful = [
+        line for line in lines
+        if line and not line.lower().startswith(_FFMPEG_BANNER_PREFIXES)
+    ]
+    if not meaningful:
+        meaningful = [line for line in lines if line]
+    if not meaningful:
+        return "Nenhuma saída de erro foi capturada do ffmpeg."
+    return " | ".join(meaningful[-5:])[:max_len]
 
 
 def _bundled_binary_candidates(name: str) -> list:
@@ -40,6 +79,26 @@ def _bundled_binary_candidates(name: str) -> list:
         candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", filename))
 
     return candidates
+
+
+def _macos_hardware_is_arm64() -> bool:
+    """True se o Mac é Apple Silicon, independente de o Python estar sob Rosetta.
+
+    `platform.machine()` devolve 'x86_64' quando o próprio Python roda traduzido,
+    então não serve para decidir se o hardware é ARM. `sysctl hw.optional.arm64`
+    responde sobre a máquina, não sobre o processo.
+    """
+    if sys.platform != 'darwin':
+        return False
+    try:
+        result = subprocess.run(
+            ['sysctl', '-n', 'hw.optional.arm64'],
+            capture_output=True, text=True, timeout=5,
+            **subprocess_no_window_kwargs()
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == '1'
 
 
 class VideoCompressor:
@@ -75,6 +134,11 @@ class VideoCompressor:
         self.ffprobe_path = self._find_ffprobe()
         self.process: Optional[subprocess.Popen] = None
         self.is_running = False
+        self._cancel_requested = False
+        # Plano de encode da última execução, já considerando um eventual
+        # fallback. Quem quiser saber o que REALMENTE rodou (o benchmark, um
+        # diagnóstico) lê daqui em vez de recalcular e arriscar divergir.
+        self.last_encode_plan: Optional['encoder_policy.EncodePlan'] = None
     
     @staticmethod
     def _find_ffmpeg() -> str:
@@ -177,7 +241,181 @@ class VideoCompressor:
             return result.returncode == 0
         except Exception:
             return False
-    
+
+    def probe_binary_info(self) -> dict:
+        """Descreve o binário de FFmpeg que este compressor vai usar.
+
+        Serve para diagnóstico: quando um usuário reporta "não comprime", a
+        primeira pergunta é *qual* ffmpeg rodou. Um binário do sistema em vez do
+        embutido, uma versão velha, ou (no macOS) um binário x86_64 rodando sob
+        Rosetta 2 num Mac Apple Silicon produzem sintomas bem diferentes e não
+        aparecem em nenhum log hoje.
+
+        Devolve sempre um dict; nunca levanta. Campos:
+            version                 str | None  — ex. "9.0"
+            arch                    list[str]   — ex. ["x86_64", "arm64"] (vazia fora do macOS)
+            is_static               bool | None — None quando não dá para saber
+            encoders_disponiveis    list[str]   — subconjunto de interesse, ordenado
+            is_bundled              bool        — se é o binário de desktop/bin
+            path, disponivel, running_under_rosetta
+        """
+        info = {
+            'path': self.ffmpeg_path,
+            'disponivel': False,
+            'version': None,
+            'version_full': None,
+            'arch': [],
+            'is_static': None,
+            'encoders_disponiveis': [],
+            'is_bundled': False,
+            'running_under_rosetta': None,
+        }
+
+        try:
+            info['is_bundled'] = any(
+                os.path.exists(c) and os.path.samefile(c, self.ffmpeg_path)
+                for c in _bundled_binary_candidates('ffmpeg')
+            )
+        except OSError:
+            pass
+
+        try:
+            result = subprocess.run(
+                [self.ffmpeg_path, '-hide_banner', '-version'],
+                capture_output=True, text=True, timeout=15,
+                **subprocess_no_window_kwargs()
+            )
+        except Exception as exc:
+            logger.debug("probe_binary_info: falha ao executar ffmpeg: %s", exc)
+            return info
+
+        if result.returncode != 0:
+            return info
+
+        info['disponivel'] = True
+        first_line = (result.stdout or '').splitlines()[:1]
+        info['version_full'] = first_line[0].strip() if first_line else None
+        match = re.search(r'ffmpeg version n?(\d+\.\d+(?:\.\d+)?)', result.stdout or '')
+        if match:
+            info['version'] = match.group(1)
+
+        info['encoders_disponiveis'] = self._probe_encoders()
+
+        if sys.platform == 'darwin':
+            info['arch'] = self._probe_macho_archs()
+            info['is_static'] = self._probe_macho_is_static()
+            # Rosetta 2: binário só-Intel numa máquina Apple Silicon. O Python
+            # também pode estar sob Rosetta, então compara com o hardware real.
+            if info['arch']:
+                info['running_under_rosetta'] = (
+                    _macos_hardware_is_arm64() and 'arm64' not in info['arch']
+                )
+
+        return info
+
+    # Conjunto reportado por probe_binary_info. Não é a lista completa de
+    # encoders do build (que tem centenas): são os que o pipeline usa hoje mais
+    # os de aceleração por hardware, que é o que importa saber num diagnóstico.
+    _PROBED_ENCODERS = (
+        'libx264', 'libx265', 'aac',
+        'h264_videotoolbox', 'hevc_videotoolbox',
+        'h264_nvenc', 'hevc_nvenc',
+        'h264_amf', 'h264_qsv',
+    )
+
+    def _probe_encoders(self) -> list:
+        """Interseção entre _PROBED_ENCODERS e o que o binário oferece."""
+        try:
+            result = subprocess.run(
+                [self.ffmpeg_path, '-hide_banner', '-encoders'],
+                capture_output=True, text=True, timeout=15,
+                **subprocess_no_window_kwargs()
+            )
+        except Exception:
+            return []
+        if result.returncode != 0:
+            return []
+
+        listing = result.stdout or ''
+        # As linhas têm a forma " V....D libx264   descrição". Casar a linha
+        # inteira evita casar o nome dentro da descrição de outro encoder.
+        found = [
+            name for name in self._PROBED_ENCODERS
+            if re.search(rf'^\s*\S+\s+{re.escape(name)}\s', listing, re.M)
+        ]
+        return sorted(found)
+
+    def _probe_macho_archs(self) -> list:
+        """Arquiteturas dentro do Mach-O, via lipo. Lista vazia se não der."""
+        try:
+            result = subprocess.run(
+                ['lipo', '-archs', self.ffmpeg_path],
+                capture_output=True, text=True, timeout=15,
+                **subprocess_no_window_kwargs()
+            )
+        except Exception:
+            return []
+        return result.stdout.split() if result.returncode == 0 else []
+
+    def _probe_macho_is_static(self) -> Optional[bool]:
+        """True se o binário só depende de /usr/lib e /System.
+
+        Essas duas existem em qualquer Mac. Dependência de qualquer outro
+        caminho (típico: /usr/local/opt do Homebrew) significa que o binário
+        morre com erro de dyld em máquina que não seja a de quem o compilou.
+        """
+        try:
+            result = subprocess.run(
+                ['otool', '-L', self.ffmpeg_path],
+                capture_output=True, text=True, timeout=15,
+                **subprocess_no_window_kwargs()
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+
+        for line in result.stdout.splitlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            lib = line.split(' (')[0].strip()
+            if not (lib.startswith('/usr/lib/') or lib.startswith('/System/')):
+                return False
+        return True
+
+    def log_binary_info(self) -> dict:
+        """Loga uma linha resumindo o binário. Chamado no startup."""
+        info = self.probe_binary_info()
+
+        if not info['disponivel']:
+            logger.warning("FFmpeg NAO disponivel em %s", info['path'])
+            return info
+
+        detalhes = [f"versao={info['version'] or '?'}"]
+        detalhes.append("embutido" if info['is_bundled'] else "do sistema")
+        if info['arch']:
+            detalhes.append("arch=" + "+".join(info['arch']))
+        if info['is_static'] is not None:
+            detalhes.append("estatico" if info['is_static'] else "DINAMICO")
+        logger.info("FFmpeg: %s (%s)", info['path'], ", ".join(detalhes))
+
+        if info.get('running_under_rosetta'):
+            logger.warning(
+                "FFmpeg embutido nao tem build arm64 e vai rodar sob Rosetta 2 "
+                "nesta maquina Apple Silicon, com perda de performance. "
+                "Rode: python desktop/tools/fetch_ffmpeg.py"
+            )
+        if info['is_static'] is False and info['is_bundled']:
+            logger.warning(
+                "FFmpeg embutido depende de bibliotecas fora de /usr/lib e /System; "
+                "ele vai falhar em Macs que nao tenham essas bibliotecas. "
+                "Rode: python desktop/tools/fetch_ffmpeg.py"
+            )
+
+        logger.debug("FFmpeg encoders: %s", ", ".join(info['encoders_disponiveis']))
+        return info
+
     def get_video_info(self, file_path: str) -> Optional[dict]:
         """
         Obtém informações do vídeo usando ffprobe.
@@ -234,10 +472,33 @@ class VideoCompressor:
                 'stored_height': stored_height,
                 'display_rotation': rotation,
                 'duration': duration,
+                'fps': self._stream_fps(stream),
                 'file_size': os.path.getsize(file_path)
             }
-        except Exception as e:
+        except Exception:
+            logger.exception("Falha ao ler informações do vídeo via ffprobe: %s", file_path)
             return None
+
+    @staticmethod
+    def _stream_fps(stream: dict) -> float:
+        """Taxa de quadros como float. 0.0 se o ffprobe não souber informar.
+
+        O ffprobe devolve uma fração ("30000/1001"), não um número. Usado pelo
+        encoder_policy para dimensionar bitrate — sem fps, um vídeo 60fps
+        receberia o alvo de um 30fps, ou seja, metade dos bits por quadro.
+        """
+        for key in ('r_frame_rate', 'avg_frame_rate'):
+            raw = stream.get(key)
+            if not raw or raw == '0/0':
+                continue
+            try:
+                numerador, _, denominador = str(raw).partition('/')
+                valor = float(numerador) / float(denominador or 1)
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            if valor > 0:
+                return valor
+        return 0.0
 
     @staticmethod
     def _display_rotation(stream: dict) -> int:
@@ -334,7 +595,10 @@ class VideoCompressor:
             video_info = self.get_video_info(input_file)
             if not video_info:
                 return False, "Não foi possível ler informações do vídeo"
-            
+
+            for warning in validate_temporal_blurs(temporal_blurs, video_info.get('width', 0), video_info.get('height', 0)):
+                logger.warning(warning)
+
             # Preparar comando FFmpeg
             config = self.COMPRESSION_PROFILES[profile]
             
@@ -351,21 +615,39 @@ class VideoCompressor:
             for segment in export_segments:
                 if not os.path.exists(segment.source_path):
                     return False, f"Arquivo de segmento não encontrado: {segment.source_path}"
-            if self._requires_segmented_export(export_segments, input_file, video_info.get('duration', 0.0)):
+            use_segmented = self._requires_segmented_export(
+                export_segments, input_file, video_info.get('duration', 0.0)
+            )
+            if use_segmented:
                 segmented_tail_filters = self._concat_tail_filters(export_segments, input_file, video_info, resolution, rotation)
-                cmd = self._build_segmented_command(
-                    input_file,
-                    output_file,
-                    video_info,
-                    config,
-                    segmented_tail_filters,
-                    remove_audio,
-                    rotation,
-                    temporal_blurs,
-                    export_segments
-                )
                 progress_duration = self._segments_duration(export_segments)
             else:
+                progress_duration = video_info['duration']
+
+            def build_command(allow_hardware: bool):
+                """Monta o comando completo para um plano de encode.
+
+                É uma função, e não um comando pronto, porque o retry precisa
+                montar tudo de novo com o encoder de software — os argumentos de
+                hardware (`-cq`, `-q:v`, `-qp_i`...) não são intercambiáveis com
+                `-crf`, então não dá para trocar só o `-c:v` no comando existente.
+                """
+                plan = self._encode_plan(profile, config, output_file, allow_hardware,
+                                         video_info=video_info)
+
+                if use_segmented:
+                    return self._build_segmented_command(
+                        input_file,
+                        output_file,
+                        video_info,
+                        plan,
+                        segmented_tail_filters,
+                        remove_audio,
+                        rotation,
+                        temporal_blurs,
+                        export_segments
+                    ), plan
+
                 cmd = [self.ffmpeg_path, '-i', input_file]
                 video_filter = build_video_filter(
                     video_info.get('width', 0),
@@ -377,13 +659,9 @@ class VideoCompressor:
 
                 if video_filter:
                     cmd.extend(['-vf', video_filter])
-                
-                cmd.extend([
-                    '-c:v', 'libx264',
-                    '-crf', str(config['crf']),
-                    '-preset', config['preset']
-                ])
-                
+
+                cmd.extend(plan.video_args)
+
                 if remove_audio:
                     cmd.append('-an')
                 else:
@@ -391,46 +669,98 @@ class VideoCompressor:
                         '-c:a', 'aac',
                         '-b:a', '128k'
                     ])
-                
+
                 cmd.extend([
                     '-movflags', '+faststart',
                     '-y',
                     output_file
                 ])
-                progress_duration = video_info['duration']
-            
+                return cmd, plan
+
+            cmd, plan = build_command(allow_hardware=True)
+
             # Executar compressão
             self.is_running = True
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                universal_newlines=True,
-                **subprocess_no_window_kwargs()
-            )
-            
-            # Processar saída e extrair progresso
-            self._process_output(progress_duration, progress_callback)
-            
-            # Aguardar conclusão
-            self.process.wait()
-            
-            if self.process.returncode == 0:
+            self._cancel_requested = False
+            returncode, stderr_output = self._run_ffmpeg(cmd, plan, progress_duration, progress_callback)
+
+            # Encoder de hardware pode passar no probe e ainda assim falhar neste
+            # vídeo específico (resolução fora do que a GPU aceita, driver que cai
+            # sob carga, sessões de encode esgotadas). Refazer em software é mais
+            # útil ao usuário do que devolver "falha ao exportar".
+            if returncode != 0 and plan.is_hardware and not self._cancel_requested:
+                logger.warning(
+                    "Encoder de hardware %s falhou (returncode=%s): %s. "
+                    "Refazendo a exportação com %s.",
+                    plan.encoder, returncode, _extract_ffmpeg_error(stderr_output),
+                    encoder_policy.SOFTWARE_ENCODER,
+                )
+                cmd, plan = build_command(allow_hardware=False)
+                returncode, stderr_output = self._run_ffmpeg(cmd, plan, progress_duration, progress_callback)
+
+            self.is_running = False
+
+            if returncode == 0:
                 if os.path.exists(output_file):
-                    self.is_running = False
                     return True, "Vídeo comprimido com sucesso!"
                 else:
-                    self.is_running = False
+                    logger.error("Ffmpeg retornou sucesso mas o arquivo de saída não existe: %s", output_file)
                     return False, "Arquivo de saída não foi criado"
             else:
-                self.is_running = False
-                stderr = self.process.stderr.read() if self.process.stderr else ""
-                return False, f"Erro ao comprimir: {stderr[:200]}"
-        
+                if self._cancel_requested:
+                    logger.info("Compressão cancelada pelo usuário (stderr parcial): %s", stderr_output.strip()[-400:])
+                    return False, "Compressão cancelada pelo usuário."
+                error_message = _extract_ffmpeg_error(stderr_output)
+                logger.error("Falha no ffmpeg (returncode=%s): %s", returncode, error_message)
+                return False, f"Erro ao comprimir: {error_message}"
+
         except Exception as e:
             self.is_running = False
+            logger.exception("Erro inesperado em compress_video.")
             return False, f"Erro: {str(e)}"
+
+    def _encode_plan(self, profile: str, config: dict, output_file: str,
+                     allow_hardware: bool = True,
+                     video_info: Optional[dict] = None) -> 'encoder_policy.EncodePlan':
+        """Pergunta ao policy quais argumentos de vídeo usar.
+
+        `get_capabilities()` sem timeout **nunca** bloqueia: se o probe de
+        background ainda não terminou, o retorno é `None` e o policy devolve
+        software. Exportar já em libx264 é melhor do que segurar o usuário
+        esperando uma detecção que só serviria para acelerar.
+        """
+        caps = encoder_caps.get_capabilities()
+        plan = encoder_policy.plan_encode(
+            profile, config, caps,
+            output_file=output_file,
+            video_info=video_info,
+            allow_hardware=allow_hardware,
+        )
+        logger.info("Plano de encode: %s", plan.describe())
+        self.last_encode_plan = plan
+        return plan
+
+    def _run_ffmpeg(self, cmd: list, plan: 'encoder_policy.EncodePlan',
+                    progress_duration: float,
+                    progress_callback: Optional[Callable] = None) -> Tuple[Optional[int], str]:
+        """Roda um comando de ffmpeg até o fim. Retorna (returncode, stderr)."""
+        logger.info("Iniciando ffmpeg [%s]: %s", plan.encoder, " ".join(cmd))
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            universal_newlines=True,
+            **subprocess_no_window_kwargs()
+        )
+
+        # Processar saída, extrair progresso e capturar o stderr completo
+        # (unica leitura possivel do stream, ver docstring de _process_output).
+        stderr_output = self._process_output(progress_duration, progress_callback)
+
+        # Aguardar conclusão
+        self.process.wait()
+        return self.process.returncode, stderr_output
 
     def _normalized_segments(self, segments: Optional[Sequence], input_file: str, duration: float) -> list:
         normalized = []
@@ -538,7 +868,7 @@ class VideoCompressor:
         input_file: str,
         output_file: str,
         video_info: dict,
-        config: dict,
+        plan: 'encoder_policy.EncodePlan',
         tail_filters: Sequence[str],
         remove_audio: bool,
         rotation: int,
@@ -570,6 +900,8 @@ class VideoCompressor:
             source_end = max(source_start, float(segment.source_end))
             segment_duration = max(0.0, float(segment.timeline_end) - float(segment.timeline_start))
             local_blurs = self._clip_temporal_blurs_for_segment(temporal_blurs, segment)
+            for warning in validate_temporal_blurs(local_blurs, segment_info.get('width', 0), segment_info.get('height', 0)):
+                logger.warning("Segmento %d (%s): %s", index, Path(source_path).name, warning)
             video_filter = build_video_filter(
                 segment_info.get('width', 0),
                 segment_info.get('height', 0),
@@ -618,13 +950,8 @@ class VideoCompressor:
         for path in input_paths:
             cmd.extend(['-i', path])
 
-        cmd.extend([
-            '-filter_complex', ';'.join(graph_parts),
-            '-map', '[v]',
-            '-c:v', 'libx264',
-            '-crf', str(config['crf']),
-            '-preset', config['preset'],
-        ])
+        cmd.extend(['-filter_complex', ';'.join(graph_parts), '-map', '[v]'])
+        cmd.extend(plan.video_args)
 
         if has_audio:
             cmd.extend(['-map', '[a]', '-c:a', 'aac', '-b:a', '128k'])
@@ -662,39 +989,65 @@ class VideoCompressor:
 
         return clipped
     
-    def _process_output(self, duration: float, progress_callback: Optional[Callable] = None):
+    def _process_output(self, duration: float, progress_callback: Optional[Callable] = None) -> str:
         """
-        Processa a saída do FFmpeg para extrair progresso.
-        
+        Le a saida de stderr do FFmpeg uma unica vez, extraindo progresso (quando
+        possivel) e acumulando o texto completo para diagnostico de falhas.
+
+        Importante: esta e a UNICA leitura de ``self.process.stderr`` por execucao.
+        Uma leitura adicional depois de ``self.process.wait()`` sempre retornaria
+        vazio (o stream ja estaria no EOF), o que apagava a mensagem de erro real
+        em qualquer falha ocorrida durante uma compressao com progress_callback.
+
         Args:
             duration: Duração total do vídeo em segundos
             progress_callback: Função para reportar progresso (0-100)
+
+        Returns:
+            Texto completo (stderr) produzido pelo processo até o momento em que
+            o stream foi fechado.
         """
-        if not self.process or not progress_callback or duration <= 0:
-            return
-        
+        if not self.process or not self.process.stderr:
+            return ""
+
+        lines = []
         try:
             for line in iter(self.process.stderr.readline, ''):
                 if not line:
                     break
-                
-                # Procurar padrão de tempo: time=HH:MM:SS.ms
-                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
-                if time_match:
-                    hours = int(time_match.group(1))
-                    minutes = int(time_match.group(2))
-                    seconds = float(time_match.group(3))
-                    
-                    current_time = hours * 3600 + minutes * 60 + seconds
-                    progress = min(100, int((current_time / duration) * 100))
-                    
-                    progress_callback(progress)
+
+                lines.append(line)
+
+                if progress_callback and duration > 0:
+                    # Procurar padrão de tempo: time=HH:MM:SS.ms
+                    time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+                    if time_match:
+                        hours = int(time_match.group(1))
+                        minutes = int(time_match.group(2))
+                        seconds = float(time_match.group(3))
+
+                        current_time = hours * 3600 + minutes * 60 + seconds
+                        progress = min(100, int((current_time / duration) * 100))
+
+                        progress_callback(progress)
         except Exception:
-            pass  # Ignorar erros ao processar progresso
+            logger.exception("Falha ao ler stderr do ffmpeg durante o processamento.")
+
+        return "".join(lines)
     
     def cancel_compression(self):
-        """Cancela a compressão em andamento."""
+        """Cancela a compressão em andamento.
+
+        Não le stderr aqui: a thread que chamou ``compress_video``/
+        ``extract_audio_mp3`` ja esta bloqueada lendo esse stream dentro de
+        ``_process_output``; terminar o processo libera essa leitura, que
+        entao captura e loga o stderr parcial (ver uso de ``_cancel_requested``
+        em ``compress_video``).
+        """
         if self.process and self.is_running:
+            self._cancel_requested = True
+            logger.warning("Cancelamento solicitado pelo usuário; finalizando processo ffmpeg (pid=%s).",
+                            getattr(self.process, "pid", "?"))
             try:
                 self.process.terminate()
                 self.process.wait(timeout=5)
@@ -702,7 +1055,7 @@ class VideoCompressor:
                 try:
                     self.process.kill()
                 except Exception:
-                    pass
+                    logger.exception("Falha ao finalizar o processo ffmpeg após cancelamento.")
             self.is_running = False
 
     def extract_audio_mp3(
@@ -731,6 +1084,8 @@ class VideoCompressor:
             ]
 
             self.is_running = True
+            self._cancel_requested = False
+            logger.info("Iniciando ffmpeg (extração de áudio): %s", " ".join(cmd))
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -740,7 +1095,7 @@ class VideoCompressor:
                 **subprocess_no_window_kwargs()
             )
 
-            self._process_output(video_info['duration'], progress_callback)
+            stderr_output = self._process_output(video_info['duration'], progress_callback)
             self.process.wait()
 
             if self.process.returncode == 0:
@@ -748,12 +1103,18 @@ class VideoCompressor:
                     self.is_running = False
                     return True, "Áudio extraído com sucesso!"
                 self.is_running = False
+                logger.error("Ffmpeg retornou sucesso mas o arquivo de áudio não existe: %s", output_file)
                 return False, "Arquivo de áudio não foi criado"
 
             self.is_running = False
-            stderr = self.process.stderr.read() if self.process.stderr else ""
-            return False, f"Erro ao extrair áudio: {stderr[:200]}"
+            if self._cancel_requested:
+                logger.info("Extração de áudio cancelada pelo usuário (stderr parcial): %s", stderr_output.strip()[-400:])
+                return False, "Extração cancelada pelo usuário."
+            error_message = _extract_ffmpeg_error(stderr_output)
+            logger.error("Falha no ffmpeg ao extrair áudio (returncode=%s): %s", self.process.returncode, error_message)
+            return False, f"Erro ao extrair áudio: {error_message}"
 
         except Exception as e:
             self.is_running = False
+            logger.exception("Erro inesperado em extract_audio_mp3.")
             return False, f"Erro: {str(e)}"
